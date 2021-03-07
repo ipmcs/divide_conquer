@@ -1,0 +1,1771 @@
+#include "ooo_cpu.h"
+#include "BTB.h"
+#include <bits/stdc++.h>
+
+set<uint64_t> distinct_blocks; // the number of distinct blocks that are observed by the prefetcher
+uint64_t lastBlock; // the last block that are touched
+
+bool DisEnabled = true; // whether Dis prefetcher is enabled or not
+bool NL_enabled = true; // whether NL prefetcher is enabled or not
+bool SNL_enabled = true; // whether Selective mechanism is enabled or not
+bool RLU_enabled = true; // whether RLU is enabled or not
+bool wrong_SNL_enabled = false; // whether wrong_SNL prefetcher is enabled or not
+
+// Policy 0: on issue prefetch, 1: on unused eviction
+bool SeqTableResetPolicy = 1; 
+
+int SEQ_depth = 4; // NL prefetcher's depth, NXL
+int SEQ_ON_DIS_depth = 1;
+int WRONG_SNL_depth = 1;
+int Dis_depth = 1; // Dis prefetcher's depth: the number of discontinuities that are fetched when a DisTable hit occures
+
+uint32_t queueSize = 16; // the size of some queues
+
+uint32_t MaxSeqLookups = queueSize; // maximum number of SeqTable and wrong_SNL_table lookups in each cycle
+uint32_t MaxDisLookups = queueSize; // maximum number of DisTable lookups in each cycle
+uint32_t MaxRLU_lookups = queueSize; // maximum number of RLU lookups in each cycle
+
+uint32_t proactive_lookahead = 7; // How many blocks SeqOnDis, DisOnSeq, DisOnDis prefetching should make progress?
+
+uint64_t wrong_SNL_decrease_period = 500000; // the number of cycles that wrong_SNL peridically decrements its counters
+
+uint64_t max_wrong_SNL = 7;
+uint64_t threshold_wrong_SNL = 3;
+
+uint64_t target_domain = pow(2, 21); // the domain that is devoted to recording the low-order bits of the targets
+uint64_t source_domain = pow(2, 4);  // the domain that is devoted to record the partial tag of the source addresses
+
+// The name of the following parameters are self explainary
+uint64_t SEQ_TABLE_SETS = 16 * 1024;
+uint64_t SEQ_TABLE_WAYS = 1;
+bool SEQ_TABLE_FULL_METADATA = false;
+bool SEQ_TABLE_TAGLESS = true;
+
+uint64_t WRONG_SNL_TABLE_SETS = 64 * 1024;
+uint64_t WRONG_SNL_TABLE_WAYS = 1;
+bool WRONG_SNL_TABLE_FULL_METADATA = false;
+bool WRONG_SNL_TABLE_TAGLESS = true;
+
+uint64_t DIS_TABLE_SINGLE_SETS = 4 * 1024;
+uint64_t DIS_TABLE_SINGLE_WAYS = 1;
+bool DIS_TABLE_SINGLE_HAS_LEVEL_TWO = false;
+uint64_t DIS_TABLE_SINGLE_CIRCULAR_HISTORY_SIZE = 1;
+bool DIS_TABLE_SINGLE_LOW_ORDER_BITS = false;
+bool DIS_TABLE_SINGLE_TARGET_APPEND = false;
+bool DIS_TABLE_SINGLE_TARGET_ADD = false; 
+
+uint64_t DIS_TABLE_MULTIPLE_SETS = 1 * 1024;
+uint64_t DIS_TABLE_MULTIPLE_WAYS = 4;
+bool DIS_TABLE_MULTIPLE_HAS_LEVEL_TWO = false;
+uint64_t DIS_TABLE_MULTIPLE_CIRCULAR_HISTORY_SIZE = 4;
+bool DIS_TABLE_MULTIPLE_LOW_ORDER_BITS = false;
+bool DIS_TABLE_MULTIPLE_TARGET_APPEND = false;
+bool DIS_TABLE_MULTIPLE_TARGET_ADD = false;
+
+
+
+// some evaluation counters
+uint64_t sequential_1_misses = 0, sequential_4_misses = 0, discontinuity_misses = 0;
+uint64_t sequential_1_prefHits = 0, sequential_4_prefHits = 0, discontinuity_prefHits = 0;
+uint64_t RLU_permit = 0, RLU_filter = 0;
+uint64_t non_prefetched_miss_in_seq_region = 0;
+uint64_t non_prefetched_miss_in_Dis_region = 0;
+uint64_t update_history_entry_missed = 0;
+
+
+// a help function for std::sort
+bool sort_pair(pair<uint64_t, uint64_t> a, pair<uint64_t, uint64_t> b) {
+	return (a.second > b.second);
+}
+
+// a class that model circular history, circular history is used for discontinuities that have multiple destinations
+// Actually, DisTable (single) does not need a circular history; however, for simplicity and providing a single and consistent
+// interface for DisTable, we have used circular history for DisTable (single) assuming a one-entry target record for the discontinuity
+class CIRCULAR_HISTORY {
+	uint64_t size; // the size of history
+	uint64_t CH_index; // pointer to the element that a new entry should be placed
+	vector<uint64_t> history; // history
+
+public:
+	CIRCULAR_HISTORY(uint64_t size = 1) {
+		this->size = size;
+		history.resize(size);
+		CH_index = 0;
+	}
+
+	// adds a new entry to the history
+	void add_history(uint64_t entry) {
+		history[CH_index] = entry;
+		CH_index = (CH_index + 1) % size;
+	}
+
+	// a help function to calculate the CH_index when it overflows or underflows
+	uint64_t rem(int64_t index) {
+		uint64_t ret_val = ((index + size) % size);
+		return ret_val;
+	}
+
+	// consults history to make a prediction,
+	// consider the following history: (a, b, c, d, a, (empty))
+	// we want to predict what is the next entry that will be inserted into the history
+	// the last entry that is inserted into the history is 'a'
+	// this function find the second last appereance of 'a' and return the entry that
+	// is inserted after it which is 'b'
+	vector<uint64_t> get_history() {
+		uint64_t index = rem(CH_index - 1);
+		uint64_t lastEntry = history[rem(CH_index - 1)];
+		vector<uint64_t> ret_history;
+		for (uint32_t i = 0; i < size; i++) {
+			index = rem(CH_index - 2 - i);
+			uint64_t candidate = history[index];
+			if (candidate == lastEntry) {
+				for (int j = 1; j <= Dis_depth; j++) {
+					ret_history.push_back(history[rem(CH_index - 2 - i + j)]);
+				}
+				return ret_history;
+			}
+		}
+		ret_history.push_back(0);
+		return ret_history;
+	}
+
+	// returns whether an entry is in the history or not
+	bool find(uint64_t entry) {
+		for (uint32_t i = 0; i < size; i++) {
+			if (history[i] == entry) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	void print_history() {
+		cout << "CH_index: " << CH_index << "\n";
+		for (uint32_t i = 0; i < size; i++) {
+			cout << "CH " << i << ": " << history[i] << "\n";
+		}
+	}
+
+	// when we sent a Dis from DisTable1 to DisTable2, we should make their circular history consistent if their history sizes are different
+	void change_history_size(int new_history_size) {
+		this->size = new_history_size;
+		vector<uint64_t> tmp_history = history;
+		history.resize(size);
+		for (uint32_t i = 0; i < tmp_history.size(); i++) {
+			history[i % size] = tmp_history[(CH_index + i) % tmp_history.size()];
+		}
+		CH_index = tmp_history.size() % size;
+	}
+
+	uint64_t get_size() {
+		return size;
+	}
+};
+
+// Class that represents a discontinuity
+class DIS
+{
+public:
+  // actual metadata that is stored for a discontinuity
+	uint64_t source = 0; // a representation of dis source address that are used in tables (for example it can be tag)
+  CIRCULAR_HISTORY circular_history; // the circular history of the discontinuity
+
+  // The following are for evaluation purposes, the do not contribute to the prefetching process
+	uint64_t owner = 0; // the full address of the source address
+	vector< pair< uint64_t, uint64_t> > dest; // pair is as follows: <destination address, its appereance frequency>
+	vector<uint64_t> dest_seq; // the sequence of destinations observed for a source address
+  uint64_t total_freq = 0; // total appereances of this discontinuity
+
+	// some counter and structures for evaluation purposes, they do nothing for prefetching
+	uint64_t correct_predictions = 0;
+	uint64_t wrong_predictions = 0;
+
+	uint64_t timely_correct_predictions = 0;
+	uint64_t untimely_correct_prediction = 0;
+
+	uint64_t circular_correct_predictions = 0;
+	uint64_t circular_wrong_predictions = 0;
+
+	std::vector<bool> prediction_history_circular;
+	vector<uint64_t> circular_predictions;
+
+
+  // constructor
+	DIS(int circular_history_size = 1) {
+		circular_history = CIRCULAR_HISTORY(circular_history_size);
+	}
+
+	// finding a prefetch candidate for this discontinuity
+	// it asks the circular history to give a prediction
+	vector<uint64_t> do_prediction() {	
+		// the main prediction
+		circular_predictions = circular_history.get_history();
+
+		vector<uint64_t> ret_val;
+		ret_val.push_back(circular_predictions[0]);
+		return ret_val;
+	}
+
+	// updates some counters to evaluate Dis prefetcher's efficiency
+	void update_prediction_history(uint64_t new_dis, uint8_t cache_hit, uint8_t prefetch_hit) {
+		bool found = false, predicted = false;
+		for (uint32_t i = 0; i < circular_predictions.size(); i++) {
+			if (circular_predictions[i] == new_dis) {
+				found = true;
+				predicted = true;
+				break;
+			}
+		}
+		if (found) {
+			prediction_history_circular.push_back(true);
+			circular_correct_predictions++;
+		}
+		else {
+			prediction_history_circular.push_back(false);
+			circular_wrong_predictions++;
+		}
+	
+		if (predicted) {
+			correct_predictions++;
+			if (prefetch_hit) {
+				timely_correct_predictions++;
+			}
+			if (!cache_hit) {
+				untimely_correct_prediction++;
+			}
+		}
+		else {
+			wrong_predictions++;
+		}
+	}
+};
+
+// Class that represents RLU
+class RLU_HISTORY {
+	vector<pair<uint64_t, bool> > rlu; // the pair is as follows: <recently looked up block address, whether it is wrong_snl prefetch or not>
+	int size; // RLU size
+
+public:
+	RLU_HISTORY(int size) {
+		rlu.resize(size);
+		this->size = size;
+	}
+
+	// inserts a new prefetch to the RLU
+	void insert(pair<uint64_t, bool> entry) {
+		rlu.push_back(entry);
+		rlu.erase(rlu.begin());
+	}
+
+	// returns whether an entry is in the RLU or not
+	bool find(uint64_t entry) {
+		for (int i = 0; i < size; i++) {
+			if (rlu[i].first == entry) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// return whether an entry in the RLU a wrong_snl prefetch or not
+	bool get_state(uint64_t entry) {
+		for (int i = 0; i < size; i++) {
+			if (rlu[i].first == entry) {
+				return rlu[i].second;
+			}
+		}
+		return false;
+	}
+};
+
+// Class that represents SeqTable
+class SEQ_TABLE {
+	bool full_table_enabled = true; // if true, SeqTable will not encouner any conflicts (map model for SeqTable entries)
+	bool tagless = false; // whether SeqTable omits tag lookups or not
+
+	vector< vector < pair< uint64_t, int > > > sets; // the actual table that can be seen as a two dimensional table
+	map<uint64_t, int> full_table; // the map model when full_table is enabled
+
+	// the structure of the table
+	uint32_t num_of_sets = 0;
+	uint32_t num_of_ways = 0;
+	uint32_t num_of_sets_bits = 0;
+
+  // some evaluation counters
+	uint64_t num_of_hits = 0;
+	uint64_t num_of_misses = 0;
+	uint64_t num_of_conflicts = 0;
+	uint64_t num_of_matches = 0;
+
+public:
+  // constructor
+	SEQ_TABLE(uint32_t ns, uint32_t nw, bool fte, bool tgl) {
+		num_of_sets = ns;
+		num_of_ways = nw;
+		num_of_sets_bits = floor(log2(num_of_sets));
+
+		full_table_enabled = fte;
+		tagless = tgl;
+
+		sets.resize(ns);
+		for (uint32_t i = 0; i < num_of_sets; i++) {
+			sets[i].resize(num_of_ways);
+			for (uint32_t j = 0; j < num_of_ways; j++) {
+				sets[i][j] = make_pair(0, 1);
+			}
+		}
+
+		num_of_hits = 0;
+		num_of_misses = 0;
+	}
+
+	// set the state of a block (should be prefetched or not)
+	void set_state(uint64_t address, int state) {
+    // if full_table is enabled, it is as simple as updating a map
+		if (full_table_enabled) {
+			full_table[address] = state;
+		}
+		else if (!tagless) {
+      // extract the set and tag in to lookup a set-associative structure
+			uint32_t set_number = address % num_of_sets;
+			uint64_t tag = address >> num_of_sets_bits;
+
+			// iterate over the ways
+			for (uint32_t i = 0; i < num_of_ways; i++) {
+				// tag match?
+				if (sets[set_number][i].first == tag) {
+					// update the state
+					sets[set_number][i].second = state;
+
+					// make it MRU
+					pair<uint64_t, int> tmp = sets[set_number][i];
+					sets[set_number].erase(sets[set_number].begin() + i);
+					sets[set_number].push_back(tmp);
+					return;
+				}
+			}
+
+			// if missed, insert it into the SeqTable and evict the LRU
+			sets[set_number].push_back(make_pair(tag, state));
+			sets[set_number].erase(sets[set_number].begin());
+		}
+		else {
+			// tagless policy can be used when the associativity is 1
+			if (num_of_ways != 1) {
+				assert(false);
+			}
+
+			uint32_t set_number = address % num_of_sets;
+
+			// calculate the tag just to know is there any conflict between updates or not
+			uint64_t tag = address >> num_of_sets_bits;
+
+      // update the counters regarding the conflicts
+			if (!(sets[set_number][0].first == tag)) {
+				num_of_conflicts++;
+				sets[set_number][0].first = tag;
+			}
+			else {
+				num_of_matches++;
+			}
+
+			// update the state regardless of the tag
+			sets[set_number][0].second = state;
+		}
+	}
+
+	// get the state of the block
+	int get_state(uint64_t address) {
+		if (full_table_enabled) {
+			if (full_table.find(address) != full_table.end()) {
+				return full_table[address];
+			}
+			// if the block is not found in the table, prefetch it!
+			else {
+				return 1;
+			}
+		}
+		else if (!tagless) {
+      // extract the set number and tag to lookup a set-associative structure
+			uint32_t set_number = address % num_of_sets;
+			uint64_t tag = address >> num_of_sets_bits;
+
+      // iterate over the ways
+			for (uint32_t i = 0; i < num_of_ways; i++) {
+				if (sets[set_number][i].first == tag) {
+					return sets[set_number][i].second;
+				}
+			}
+
+			return 1;
+		}
+		else {
+      // tagless policy can be used when associativity is '1'
+			if (num_of_ways != 1) {
+				assert(false);
+			}
+
+      // extract the set number and the tag, tag is just used to evaluate the conflicts in the tagless table
+			uint32_t set_number = address % num_of_sets;
+			uint64_t tag = address >> num_of_sets_bits;
+
+      // update the conflict counters
+			if (!(sets[set_number][0].first == tag)) {
+				num_of_conflicts++;
+				sets[set_number][0].first = tag;
+			}
+			else {
+				num_of_matches++;
+			}
+
+      // return the status
+			return sets[set_number][0].second;
+		}
+	}
+
+	void report() {
+		cout << "SeqTable matches: " << num_of_matches << "\tconflicts: " << num_of_conflicts << "\n";
+	}
+};
+
+
+// Class that represents wrong_SNL
+// wrong_SNL is used to fix wrong predictions of SNL prefetcher
+// consider the following case: A, A+1, ..., A, B, ..., A, B, ..., A, B, ..., A, A+1
+// this scenario shows that prefetching A+1 on A is not always useful. Thus, SNL may decide to filter it
+// wrong_SNL prefetcher detects such cases and tries to aggressively prefetch A+1 whenever the block 'A' is accessed
+// wrong_SNL works based on the frequency of the cases that a SNL filter has resulted in missing a useful prefetch
+// if the frequency exceeds a predefined threshold, wrong_SNL prefetches regardless of the SNL's decision
+struct WRONG_SNL_ELEMENT
+{
+  // it is the actual metadata that wrong_SNL stores in its table
+ 	uint64_t period_freq = 0;
+
+  // 'do_pref' is used in our implementation for prefetching, however, we do not assume a storage cost for it since this flag's state can be 
+  // determined according to 'period_freq's value. We use it just to make our code more legible
+  bool do_pref = false;
+  
+  // the following are used just for evaluation purposes, they do nothing for prefetching
+	uint64_t tag = 0;
+	uint64_t total_freq = 0;
+};
+
+// The class that stores the wrong_SNL prefetcher's metadata
+class WRONG_SNL_TABLE {
+  // these flags model how wrong_SNL stores its metadata
+	bool full_table_enabled = true; // in full_table, there will be no conflicts among different entries, it uses a map structure to hold metadata
+	bool tagless = false; // if the mode is not full_table, this flag indicates whether wrong_SNL_table stores the tag for entries or not.
+
+	vector< vector < WRONG_SNL_ELEMENT > > sets; // the actual table
+	map<uint64_t, WRONG_SNL_ELEMENT> full_table; // the map that is used when the wrong_SNL is in full_table mode
+  
+  // the structure of wrong_SNL table
+	uint32_t num_of_sets = 0;
+	uint32_t num_of_ways = 0;
+	uint32_t num_of_sets_bits = 0;
+
+  // some evaluation counters
+	uint64_t num_of_hits = 0;
+	uint64_t num_of_misses = 0;
+	uint64_t num_of_conflicts = 0;
+	uint64_t num_of_matches = 0;
+
+public:
+  // constructor
+	WRONG_SNL_TABLE(uint32_t ns, uint32_t nw, bool fte, bool tgl) {
+		num_of_sets = ns;
+		num_of_ways = nw;
+		num_of_sets_bits = floor(log2(num_of_sets));
+
+		full_table_enabled = fte;
+		tagless = tgl;
+
+		sets.resize(ns);
+		for (uint32_t i = 0; i < num_of_sets; i++) {
+			sets[i].resize(num_of_ways);
+		}
+
+		num_of_hits = 0;
+		num_of_misses = 0;
+	}
+
+	// when SNL's wrong filtering occurs, wrong_SNL increases its counter
+	// if counter exceeds the threshold, wrong_SNL enables prefetching
+	void increase(uint64_t address) {
+    // if wrong_SNL_table is full_table, use this block
+		if (full_table_enabled) {
+      // update the counter if it has not reached the max value
+			if (full_table[address].period_freq < max_wrong_SNL) {
+				full_table[address].period_freq++;
+			}
+
+      // enable prefetching 
+			if (full_table[address].period_freq >= threshold_wrong_SNL) {
+				full_table[address].do_pref = true;
+			}
+
+      // update an evaluation counter
+			full_table[address].total_freq++;
+		}
+    // if the policy is tagged, use the following block
+		else if (!tagless) {
+      // extract the set and tag to lookup the set-associative table
+			uint32_t set_number = address % num_of_sets;
+			uint64_t tag = address >> num_of_sets_bits;
+
+      // iterate over the ways
+			for (uint32_t i = 0; i < num_of_ways; i++) {
+        // find a tag match
+				if (sets[set_number][i].tag == tag) {
+          // increment the counter if it has not reached the max value
+					if (sets[set_number][i].period_freq < max_wrong_SNL) {
+						sets[set_number][i].period_freq++;
+					}
+      
+          // enable prefetching once the counter exceeds the threshold
+					if (sets[set_number][i].period_freq >= threshold_wrong_SNL) {
+						sets[set_number][i].do_pref = true;
+					}
+
+          // update an evaluation counter
+					sets[set_number][i].total_freq++;
+
+          // update the LRU replacement policy
+					WRONG_SNL_ELEMENT tmp = sets[set_number][i];
+					sets[set_number].erase(sets[set_number].begin() + i);
+					sets[set_number].push_back(tmp);
+					return;
+				}
+			}
+
+      // insert into the table if the record does not alredy exist in the table
+      // create the record
+			WRONG_SNL_ELEMENT tmp;
+			tmp.tag = tag;
+			tmp.period_freq = 1;
+			tmp.total_freq = 1;
+			tmp.do_pref = false;
+
+      // insert it
+			sets[set_number].push_back(tmp);
+      // evict the LRU entry
+			sets[set_number].erase(sets[set_number].begin());
+		}
+		else {
+			if (num_of_ways != 1) {
+				assert(false);
+			}
+      // get the set and tag of the record, tag is used just for updating the evaluation counters
+			uint32_t set_number = address % num_of_sets;
+			uint64_t tag = address >> num_of_sets_bits;
+
+      // update the evaluation counters
+			if (!(sets[set_number][0].tag == tag)) {
+				num_of_conflicts++;
+				sets[set_number][0].tag = tag;
+			}
+			else {
+				num_of_matches++;
+			}
+
+      // increment the counter if it has not reached to the max value
+			if (sets[set_number][0].period_freq < max_wrong_SNL) {
+				sets[set_number][0].period_freq++;
+			}
+      // enable prefetching if the counter has reached to the threshold
+			if (sets[set_number][0].period_freq >= threshold_wrong_SNL) {
+				sets[set_number][0].do_pref = true;
+			}
+      
+      // update an evaluation counter
+			sets[set_number][0].total_freq++;
+		}
+	}
+
+	// consider this case:
+	// A, A+1, ..., A, A+1, ..., A, B, ..., A, B, ..., A, B, ..., A, B
+	// suppose that the first two appereances are SNL's wrong filters that trigger wrong_SNL prefetcher on the next
+	// touches on block 'A'. But it can be inferred from the sequence the in the next triggers, 'A+1' is not accessed
+	// and wrong_SNL may result in useless prefetches. As a result, we perodically decrease the wrong_SNL's counter
+	// if the block is still need to be supported by wrong_SNL prefetching the counter will increase to compensate for
+	// this reduction, otherwise, wrong_SNL will be correctly disabled
+	void decrease() {
+		if (full_table_enabled) {
+      // iterate over all of the objects
+			for (map < uint64_t, WRONG_SNL_ELEMENT>::iterator it = full_table.begin(); it != full_table.end(); it++) {
+        // decrement their counter if it is above 0
+				if ((*it).second.period_freq > 0) {
+					(*it).second.period_freq--;
+				}
+        
+        // enable prefetching if the counter is above the threshold
+				if ((*it).second.period_freq >= threshold_wrong_SNL) {
+					(*it).second.do_pref = true;
+				}
+        // disable prefetching if it is below less than the threshold
+				else {
+					(*it).second.do_pref = false;
+				}
+			}
+		}
+		else {
+      // iterate over all the sets
+			for (uint32_t i = 0; i < num_of_sets; i++) {
+        // iterate over all the ways
+				for (uint32_t j = 0; j < num_of_ways; j++) {
+          // derement the counter if it is above 0
+					if (sets[i][j].period_freq > 0) {
+						sets[i][j].period_freq--;
+            // enable prefetching if counter is above the threshold
+						if (sets[i][j].period_freq >= threshold_wrong_SNL) {
+							sets[i][j].do_pref = true;
+						}
+            //disable prefetching if counter is less than the threshold
+						else {
+							sets[i][j].do_pref = false;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// returns whether the counter of the given address is above the threshold or not
+	// it finds the entry in the table and checks the state of the 'do_pref' flag
+	bool do_prediction(uint64_t address) {
+		if (full_table_enabled) {
+			if (full_table.find(address) != full_table.end()) {
+				return full_table[address].do_pref;
+			}
+			return false;
+		}
+		else if (!tagless) {
+			uint32_t set_number = address % num_of_sets;
+			uint64_t tag = address >> num_of_sets_bits;
+
+			for (uint32_t i = 0; i < num_of_ways; i++) {
+				if (sets[set_number][i].tag == tag) {
+					return sets[set_number][i].do_pref;
+				}
+			}
+
+			return false;
+		}
+		else {
+			if (num_of_ways != 1) {
+				assert(false);
+			}
+			uint32_t set_number = address % num_of_sets;
+			uint64_t tag = address >> num_of_sets_bits;
+
+			if (!(sets[set_number][0].tag == tag)) {
+				num_of_conflicts++;
+				sets[set_number][0].tag = tag;
+			}
+			else {
+				num_of_matches++;
+			}
+
+			return sets[set_number][0].do_pref;
+		}
+	}
+
+	void report() {
+		cout << "wrong_snl_table matches: " << num_of_matches << "\tconflicts: " << num_of_conflicts << "\n";
+	}
+};
+
+// a helper function to sort discontinuities based on their frequency
+bool sort_DIS(DIS a, DIS b) {
+	return (a.total_freq > b.total_freq);
+}
+
+// Class that represents DisTable
+class DIS_TABLE {
+  // the structure of the table
+	uint32_t num_of_sets;
+	uint32_t num_of_ways;
+	uint32_t num_of_sets_bits;
+
+	// some evaluation counters
+	uint64_t num_of_hits;
+	uint64_t num_of_misses;
+	uint64_t num_of_evictions;
+	uint64_t num_of_ignored_dests;
+
+	uint64_t internal_conflicts;
+	uint64_t external_conflicts;
+
+	uint64_t num_of_updates;
+
+	vector< vector < DIS > > sets; // the actual table
+	bool two_level_table; // whether DisTable will be organized as two separate tables, one for single destination discontinuities, the second for multiple destination discontinuities
+	bool smaller_targets; // whether the destination targets are stored in a more storage-efficient way by removing high-order bits (that are same as the source address)
+  uint64_t smaller_targets_domain; // the address domain that are not common with the source address and should be stored
+	uint64_t smaller_targets_domain_width;
+  uint64_t pTag_domain;
+  int circular_history_size; // the circular history size of the destinations
+	DIS_TABLE * level_two; // a pointer to the second level DisTable. when a discontinuity finds the second destination, it should be sent from DisTable_single to DisTable_multiple
+  bool target_add; // whether the target should be constructed by adding an offset to the source address, we have also implemented this policy; however, we decided to use 'append' method since it does not require a sophisticated adder module 
+  bool target_append; // whether the target should be constructe by appending the recorded target to the high-order bits of the source address
+
+public:
+  // constructor
+	DIS_TABLE(int nset, int nway, bool tlt, DIS_TABLE * lt, int chs, bool sm, bool tapp, bool tadd) {
+		num_of_sets = nset;
+		num_of_ways = nway;
+		num_of_sets_bits = floor(log2(num_of_sets));
+
+		num_of_hits = 0;
+		num_of_misses = 0;
+		num_of_evictions = 0;
+		num_of_ignored_dests = 0;
+
+		internal_conflicts = 0;
+		external_conflicts = 0;
+
+		num_of_updates = 0;
+
+
+		sets.resize(num_of_sets);
+    
+		for (uint32_t i = 0; i < num_of_sets; i++) {
+			sets[i].resize(num_of_ways);
+		}
+		two_level_table = tlt;
+		level_two = lt;
+		circular_history_size = chs;
+		smaller_targets = sm;
+		smaller_targets_domain = target_domain;
+    smaller_targets_domain_width = log2(target_domain);
+    target_add = tadd;
+    target_append = tapp;
+    pTag_domain = source_domain;
+
+    // when we use 'smaller' target policy, it is not possible to have both 'append' and 'add' policies
+    if(sm && tadd && tapp)  { assert(false);}
+
+    // when we use 'smaller' target policy, one of 'append' or 'add' policies should be activated
+    if(sm && !tadd && !tapp){ assert(false);}
+
+    // if the 'smaller' target policy is 'add', please note that the difference offset is divided into two separate domains
+    // above the source and below the source, for example, consider a 20-bit domain, this domain can cover (source - pow(2, 19), source + pow(2, 19))
+    // consequently, we have divided the effective domain by two
+    if(tadd){
+      smaller_targets_domain /= 2;
+      smaller_targets_domain_width -= 1;
+    }
+	}
+
+	// lookup a discontinuity in the DisTable, the inputs are as follows:
+	// source: the source address that is looked up
+	// dest: the destination that should be recorded for the source address
+	// do_insert: if true, the (source, dest) discontinuity will be added to the table, otherwise, no further action will be made
+	// make_MRU: if true, in the case of DisTable hit, the discontinuity will be promoted to the MRU position of the corresponding set
+	// count_hit_or_miss: update the counters or not
+	bool lookup(uint64_t source, uint64_t destination, bool do_insert, bool make_MRU, bool count_hit_or_miss) {
+    // extract set and tag
+		uint32_t set_number = source % num_of_sets;
+		uint64_t tag = (source >> num_of_sets_bits) % pTag_domain;
+
+    // iterate over ways
+		for (uint32_t i = 0; i < num_of_ways; i++) {
+      // compare tags
+			if (sets[set_number][i].source == tag) {
+        // execute the following block just when the lookup wants to insert an entry into DisTable
+				if (do_insert) {
+				  // check if this discontinuity meets 'smaller' target policies requirements	
+          pair<uint64_t, bool> insertable = check_insertable(source, destination);
+          
+          // execute this block is requirements are met
+          if(insertable.second){
+
+            // update some evaluation metadata, they do not something for prefetching
+						bool found_in_dests = false;
+						for (uint32_t j = 0; j < sets[set_number][i].dest.size(); j++) {
+							if (sets[set_number][i].dest[j].first == destination) {
+								sets[set_number][i].dest[j].second++;
+								sets[set_number][i].total_freq++;
+								found_in_dests = true;
+								break;
+							}
+						}
+
+            // update some evaluation counters and metadata
+						if (!found_in_dests) {
+							sets[set_number][i].dest.push_back(make_pair(destination, 1));
+							sets[set_number][i].total_freq++;
+						}
+						sets[set_number][i].dest_seq.push_back(destination);
+
+            // check whether the new target already exists in the circular history or not
+						bool found_in_circular_history = false;
+						for (uint32_t j = 0; j < sets[set_number][i].circular_history.get_size(); j++) {
+							if (sets[set_number][i].circular_history.find(insertable.first)) {
+                found_in_circular_history = true;
+								break;
+							}
+						}
+
+            // do the following block if the target does not exist
+						if (!found_in_circular_history) {
+              // if Dis prefetcher supports multiple tables, do the following
+							if (two_level_table) {
+                // move thid discontinuity to DisTable (multiple)
+								level_two->insert(sets[set_number][i], source, destination);
+
+                // erase this record from DisTable (single)
+								sets[set_number].erase(sets[set_number].begin() + i);
+
+                // fill its place with a dummy entry
+								DIS tmp;
+								sets[set_number].insert(sets[set_number].begin(), tmp);
+
+                // update some evaluation counters
+								if (count_hit_or_miss) {
+									num_of_hits++;
+								}
+								num_of_updates++;
+
+								return true;
+							}
+							else {
+								internal_conflicts++;
+							}
+						}
+
+
+						// if Dis uses a single table or there is not another already recorded discontinuity,
+						// update the target field
+						sets[set_number][i].circular_history.add_history(insertable.first);
+             
+						num_of_updates++;
+					}
+					else {
+						num_of_ignored_dests++;
+					}
+				}
+
+        // upon a DisTable hit, make the record MRU
+				if (make_MRU) {
+					DIS tmp = sets[set_number][i];
+					sets[set_number].erase(sets[set_number].begin() + i);
+					sets[set_number].push_back(tmp);
+				}
+
+        // update an evaluation counter
+				if (count_hit_or_miss) {
+					num_of_hits++;
+				}
+				return true;
+			}
+		}
+
+    // insert the discontinuity if required
+		if (do_insert) {
+			insert(source, destination);
+		}
+
+    // update an evaluation counter
+		if (count_hit_or_miss) {
+			num_of_misses++;
+		}
+		return false;
+	}
+
+	// insert a new discontinuity into the table
+	void insert(uint64_t source, uint64_t destination) {
+    // check whether this discontinuity meets the smaller target policy's requirements
+    pair<uint64_t, bool> insertable = check_insertable(source, destination);
+    
+    // do this block if the record can be inserted
+		if(insertable.second){
+      // extract set and tag
+			uint32_t set_number = source % num_of_sets;
+			uint64_t tag = (source >> num_of_sets_bits) % pTag_domain;
+
+      // create the discontinuity object	
+			DIS tmp = DIS(circular_history_size);
+      // set the actual prefetching metadata
+			tmp.source = tag;
+      tmp.circular_history.add_history(insertable.first);
+
+      // set the evaluation metadata
+			tmp.owner = source;
+			tmp.dest.push_back(make_pair(destination, 1));
+			tmp.dest_seq.push_back(destination);
+      tmp.total_freq = 1;
+
+      // update an evaluation counter
+			if (sets[set_number].front().owner != 0) {
+				external_conflicts++;
+			}
+
+      // remove the LRU entry
+			sets[set_number].erase(sets[set_number].begin());
+
+      // insert at MRU position
+			sets[set_number].push_back(tmp);
+
+      // update evluation counters
+			num_of_evictions++;
+			num_of_updates++;
+		}
+		else {
+			num_of_ignored_dests++;
+		}
+	}
+
+	// insert a new discontinuity into the table, an overloaded version
+	// this function is used when we want to transfer a discontinuity from the DisTable (single) to DisTable (multiple)
+	void insert(DIS dis, uint64_t source, uint64_t destination) {
+    // check whether this discontinuity meets smaller target policy's requirements
+    pair<uint64_t, bool> insertable = check_insertable(source, destination);
+  
+    // insert it using the following block if the requirements are met
+    if(insertable.second){
+      // extract set and tag
+			uint32_t set_number = source % num_of_sets;
+			uint64_t tag = (source >> num_of_sets_bits) % pTag_domain;
+
+      // update Dis's tag
+			dis.source = tag;
+
+      // update the circular history
+			dis.circular_history.change_history_size(circular_history_size);
+      dis.circular_history.add_history(insertable.first);
+
+      // update an evaluation counter
+			if (sets[set_number].front().owner != 0) {
+				external_conflicts++;
+			}
+
+      // evict the LRU entry
+			sets[set_number].erase(sets[set_number].begin());
+
+      // insert at MRU position
+			sets[set_number].push_back(dis);
+
+      // update some evaluation counters
+			num_of_evictions++;
+			num_of_updates++;
+			num_of_hits++;
+		}
+		else {
+			num_of_ignored_dests++;
+		}
+	}
+
+	// DisTable's prefetching is based on this function.
+	// DisTable makes some predictions by consulting the circular history of the discontinuities
+	vector<uint64_t> do_prediction(uint64_t source) {
+		vector<uint64_t> predictions;
+
+    // extract set and tag
+		uint32_t set_number = source % num_of_sets;
+		uint64_t tag = (source >> num_of_sets_bits) % pTag_domain;
+
+    // iterate over ways
+		for (uint32_t i = 0; i < num_of_ways; i++) {
+      // find a tag match
+			if (sets[set_number][i].source == tag) {
+        // extract a target from circular history
+				predictions = sets[set_number][i].do_prediction();
+
+        // reconstruct the full target address using the source address
+        update_predictions(source, predictions);
+				return predictions;
+			}
+		}
+
+    // nothing is found for prefetching
+		predictions.push_back(0);
+		return predictions;
+	}
+
+  // reconstrcut the target address using the source address, three policies are implemented
+  // For competition, we've used 'append' policy
+  void update_predictions(uint64_t source, vector<uint64_t> &predictions){
+    // when full address of the target block is used, there no need to modify them
+    if(!smaller_targets){
+      return;
+    }
+    // in 'append' policy, append the recorded low-order bits the target to high-order bits of the source address
+    // to reconstruct the full target address
+    else if(target_append){
+      for(uint64_t i = 0; i < predictions.size(); i++){
+        predictions[i] = (((source >> smaller_targets_domain_width) << smaller_targets_domain_width) + predictions[i]);
+      }
+    }
+    // in 'add' policy, the recorded target is an offset to the actual target, add it to the source address to get the 
+    // full address of the target
+    else if(target_add){
+      for(uint64_t i = 0; i < predictions.size(); i++){
+        predictions[i] = source + predictions[i];
+      }
+    }
+  }
+
+  // check whether a discontinuity can be recorded according to 'smaller target' policy
+  // three policies are implemented, for competition, we've used 'append' policy
+  pair<uint64_t,bool> check_insertable(uint64_t source, uint64_t destination){
+    // return value, first: the recorded target, second: if it meets the requirements
+    pair<uint64_t, bool> ret_val = make_pair(0, false);
+
+    // if smaller target policy is not used, target is the full address of the target and the requirements are met
+	  if(!smaller_targets){
+      ret_val.first = destination;
+      ret_val.second = true;
+    }	
+
+    // if the policy is 'append', source and destination should have a similar high-order bits, check it by shifting both addresses
+    // with a predefined shift-width and compare the remaining bits
+    else if(target_append){
+      // the requirement is met when the remaining bits are the same
+      if((source >> smaller_targets_domain_width) == (destination >> smaller_targets_domain_width)){
+        // the target is the low-order bits
+        ret_val.first = (destination % smaller_targets_domain);
+        ret_val.second = true;
+        // ensure the full address of the target can be reconstructed using the high-order bits of the source and the recorded target
+        assert(destination == (((source >> smaller_targets_domain_width) << smaller_targets_domain_width) + ret_val.first)); 
+      }
+    }
+    // for 'add' policy, the requirement is that the target should place in an address space that its offset with the source
+    // address can be recorded in the provided bits for the target field of the DisTable
+    else if(target_add){
+      // check the offset of target respect to the source address
+      if((source - smaller_targets_domain) <= destination && (source + smaller_targets_domain) >= destination){
+        ret_val.first = destination - source;
+        ret_val.second = true;
+        // ensure that the full address of the target can be reconstructed using the source address and the recorded offset
+        assert(destination == (ret_val.first + source));
+      }
+    }
+    return ret_val;
+  }
+
+	// this function updates some evaluation counters
+	bool update_prediction_history(uint64_t source, uint64_t destination, uint8_t cache_hit, uint8_t prefetch_hit) {
+		uint32_t set_number = source % num_of_sets;
+		uint64_t tag = (source >> num_of_sets_bits) % pTag_domain;
+  
+    pair<uint64_t, bool> insertable = check_insertable(source, destination);
+
+		for (uint32_t i = 0; i < num_of_ways; i++) {
+			if (sets[set_number][i].source == tag) {
+				sets[set_number][i].update_prediction_history(insertable.first, cache_hit, prefetch_hit);
+        return true;
+			}
+		}
+
+		return false;
+	}
+
+  // report evaluation counters
+	void report() {
+		cout << "num_of_hits: " << num_of_hits << "\tnum_of_misses: " << num_of_misses << "\tnum_of_evictions: " << num_of_evictions << "\tnum_of_ignored_dests: " << num_of_ignored_dests << "\n";
+		cout << "num_of_updates: " << num_of_updates << "\tinternal_conflicts: " << internal_conflicts << "\texternal_conflicts: " << external_conflicts << "\n";
+	}
+
+  // print the DisTable
+	void print_table(int sn, bool print_all) {
+		if (print_all) {
+			for (uint32_t i = 0; i < num_of_sets; i++) {
+				for (uint32_t j = 0; j < num_of_ways; j++) {
+					cout << "\n\n\nset: " << i << "\tway: " << j << "\n";
+					cout << "owner: " << sets[i][j].owner << "\tsource: " << sets[i][j].source << "\n";
+					sort(sets[i][j].dest.begin(), sets[i][j].dest.end(), sort_pair);
+					for (uint32_t t = 0; t < sets[i][j].dest.size(); t++) {
+						//cout << "Dest " << t << ": " << sets[i][j].dest[t].first << "\t" << sets[i][j].dest[t].second << "\n";
+					}
+					sets[i][j].circular_history.print_history();
+				}
+			}
+		}
+		else {
+			for (uint32_t j = 0; j < num_of_ways; j++) {
+				cout << "\n\n\nset: " << sn << "\tway: " << j << "\n";
+				cout << "owner: " << sets[sn][j].owner << "\tsource: " << sets[sn][j].source << "\n";
+				sort(sets[sn][j].dest.begin(), sets[sn][j].dest.end(), sort_pair);
+				for (uint32_t t = 0; t < sets[sn][j].dest.size(); t++) {
+					//cout << "Dest " << t << ": " << sets[sn][j].dest[t].first << "\t" << sets[sn][j].dest[t].second << "\n";
+				}
+				sets[sn][j].circular_history.print_history();
+			}
+		}
+	}
+
+  // some helper functions
+	uint32_t get_num_of_sets() {
+		return num_of_sets;
+	}
+
+	uint32_t get_num_of_ways() {
+		return num_of_ways;
+	}
+
+	DIS get_entry(uint32_t sn, uint32_t wn) {
+		return sets[sn][wn];
+	}
+};
+
+// enumeration to indicate the type of prefetches
+enum PREFETCH_TYPES {
+	SEQ_P = 1,        // sequential prefetch (NL, SNL)
+	DIS_P,        // discontinuity prefetch
+	SEQ_ON_DIS_P, // sequential prefetch which is triggered as a lookahead of dicsontinuity prefetch
+	DIS_ON_SEQ_P, // discontinuity prefetch which is triggered as a lookahead of sequential prefetch
+	WRONG_SNL_P,   // wrong_SNL prefetch
+	DIS_ON_DIS_P // discontinuity prefetch which is triggered as a lookahead of discontinuity prefetch
+};
+
+
+// instantiate the prefetchers' objects
+SEQ_TABLE SeqTable = SEQ_TABLE(SEQ_TABLE_SETS, SEQ_TABLE_WAYS, SEQ_TABLE_FULL_METADATA, SEQ_TABLE_TAGLESS); // 64 K SeqTable that imposes 8 K storage cost
+WRONG_SNL_TABLE wrong_snl_table = WRONG_SNL_TABLE(WRONG_SNL_TABLE_SETS, WRONG_SNL_TABLE_WAYS, WRONG_SNL_TABLE_FULL_METADATA, WRONG_SNL_TABLE_TAGLESS); // 64 K wrong_SNL_Table that imposes 24 K storage cost (assuming 3 bit counters)
+
+RLU_HISTORY RLU = RLU_HISTORY(8); // 8 entry RLU
+vector<pair<uint64_t, pair<uint32_t, PREFETCH_TYPES> > > SeqQueue; // This queue holds the blocks that trigger sequential prefetchers,   please note that this queue does not hold prefetch candidates, 32-entry, storage cost: 0.25 KB
+vector<pair<uint64_t, pair<uint32_t, PREFETCH_TYPES> > > DisQueue; // This queue holds the blocks that trigger discontinuity prefetcher, please note that this queue does not hold prefetch candidates, 32-entry, storage cost: 0.25 KB
+vector<pair<uint64_t, pair<uint32_t, PREFETCH_TYPES> > > RLU_queue; // This queue holds prefetch candidates before performing RLU lookup, 32-entry, storage cost: 0.25 KB
+
+
+DIS_TABLE DisTable_multipleDests(DIS_TABLE_MULTIPLE_SETS, DIS_TABLE_MULTIPLE_WAYS, DIS_TABLE_MULTIPLE_HAS_LEVEL_TWO, NULL, DIS_TABLE_MULTIPLE_CIRCULAR_HISTORY_SIZE, DIS_TABLE_MULTIPLE_LOW_ORDER_BITS, DIS_TABLE_MULTIPLE_TARGET_APPEND, DIS_TABLE_MULTIPLE_TARGET_ADD); // DisTable_multipleDests, 1 K sets, 4 way, 4 K entry, each entry: source address = 8-bit partial tag, dest address: 21 bits (just 21 lower bits of the destination, assuming the high order bits are same as the source address), circular history: 4 * 21 bits (for targets) + 2 bits for the tail of circular history, assuming 4-way set-associative structure, 2-bits per record for LRU replacement policy, storage cost of each record: 96 bits, total storage cost: 48 KB
+DIS_TABLE DisTable_singleDest(DIS_TABLE_SINGLE_SETS, DIS_TABLE_SINGLE_WAYS, DIS_TABLE_SINGLE_HAS_LEVEL_TWO, &DisTable_multipleDests, DIS_TABLE_SINGLE_CIRCULAR_HISTORY_SIZE, DIS_TABLE_SINGLE_LOW_ORDER_BITS, DIS_TABLE_SINGLE_TARGET_APPEND, DIS_TABLE_SINGLE_TARGET_ADD); // DisTable_singleDest, 3 K sets, 4 way, 12 K entry, each entry: source address = 8-bit partial tag, dest addresses = 21 bits (just 21 lower bits of the destination), assuming a 4-way set-associative structure, each record needs 2-bits to implement LRU replacement policy, storage cost of each record: 31, total storage cost: 46.5 KB
+
+// TOTAL_STORAGE_COST: 127.31 KB
+
+
+// Prefetchers' implementation
+
+// inserts a DisTable lookup candidate into the DisQueue
+void do_Dis_prefetch(O3_CPU *core , uint64_t addr, uint64_t trigBlock, uint64_t currentBlock) {
+	if (DisQueue.size() < queueSize) {
+		DisQueue.push_back(make_pair(trigBlock, make_pair(0, DIS_P)));
+	}
+	else {
+	}
+	return;
+}
+
+
+// Sequential prefetching is done in this function. Sequential prefetching consists of NL, SNL and wrong_SNL prefetching.
+// In this function, we lookup the SeqTable and wrong_SNL tables if it is needed, and insert the prefetch candidates to the RLUQueue to perform RLU lookup
+void SeqPrefetching(O3_CPU *core) {
+	if (SeqQueue.empty()) {
+		return;
+	}
+
+	// set the number of lookups in this cycle
+	uint32_t thisCycleSeqLookups = MaxSeqLookups;
+	if (thisCycleSeqLookups > SeqQueue.size()) {
+		thisCycleSeqLookups = SeqQueue.size();
+	}
+
+	// perform lookups
+	for (uint32_t i = 0; i < thisCycleSeqLookups; i++) {
+
+		uint32_t depth = 0;
+
+    // set the sequential prefetching's depth based on sequential prefetcher's type
+    if(SeqQueue[0].second.second == SEQ_P){ depth = SEQ_depth; }
+    else if(SeqQueue[0].second.second == SEQ_ON_DIS_P){ depth = SEQ_ON_DIS_depth; }
+    else if(SeqQueue[0].second.second == WRONG_SNL_P){ depth = WRONG_SNL_depth; }
+
+    // extract the prefetch candidates
+		for (uint32_t j = 1; j <= depth; j++) {
+			uint64_t pf_addr_block = SeqQueue[0].first + j;
+
+			// check if SNL is enabled
+			if (SNL_enabled) {
+				// perform SeqTable lookup
+				if (SeqTable.get_state(pf_addr_block)) {
+					// if SeqTable predicts a useful prefetch, add it to the RLUQueue if it is not full
+					if (RLU_queue.size() < queueSize) {
+						RLU_queue.push_back(make_pair(pf_addr_block, make_pair(SeqQueue[0].second.first, SeqQueue[0].second.second)));
+						continue;
+					}
+				}				
+
+				// check if wrong_SNL is enabled
+				if (wrong_SNL_enabled) {
+          // perform wrong_SNL lookup
+					if (wrong_snl_table.do_prediction(pf_addr_block)) {
+						// if wrong_SNL predicts a useful prefetch, add it to the RLUQueue if it is not full
+						if (RLU_queue.size() < queueSize) {
+							RLU_queue.push_back(make_pair(pf_addr_block, make_pair(SeqQueue[0].second.first, WRONG_SNL_P)));
+							continue;
+						}
+					}
+				}
+			}
+
+			// if SNL is deactivated, perform usual sequential prefetching
+			// all prefetch candidates are pushed into the RLUQueue
+			else {
+				if (RLU_queue.size() < queueSize) {
+					RLU_queue.push_back(make_pair(pf_addr_block, make_pair(SeqQueue[0].second.first, SeqQueue[0].second.second)));
+					continue;
+				}
+			}
+		}
+
+		// remove the current trigger block from SeqQueue
+		SeqQueue.erase(SeqQueue.begin());
+	}
+}
+
+// This function performs DisTable lookup and adds prefetch candidates to the RLUQueue
+void DisPrefetching(O3_CPU *core) {
+	if (DisQueue.empty()) {
+		return;
+	}
+  if(!DisEnabled && !DisQueue.empty()){
+    assert(false);
+  }
+
+  // set the number of DisTable lookups per cycle
+	uint32_t thisCycleDisLookups = MaxDisLookups;
+	if (DisQueue.size() < thisCycleDisLookups) {
+		thisCycleDisLookups = DisQueue.size();
+	}
+
+  // perform lookups
+	for (uint32_t i = 0; i < thisCycleDisLookups; i++) {
+    // extract prefetch candidates by consulting the DisTable
+		uint64_t trigBlock = DisQueue[0].first;
+
+		// consult with DisTables to obtain prefetch candidates
+		vector<uint64_t> predictions;
+  
+    // perform a simple lookup to know whether the table has the discontinuity
+		if (DisTable_singleDest.lookup(trigBlock, 0, 0, 0, 0)) {
+      // get the prefetch candidates if DisTable (single) has the discontinuity
+			predictions = DisTable_singleDest.do_prediction(trigBlock);
+		}
+    // perform a simple lookup to know whether the table has the discontinuity
+		else if (DIS_TABLE_SINGLE_HAS_LEVEL_TWO && DisTable_multipleDests.lookup(trigBlock, 0, 0, 0, 0)) {
+      // get the prefetch candidates if DisTable (multiple) has the discontinuity
+			predictions = DisTable_multipleDests.do_prediction(trigBlock);
+		}
+
+    // insert prefetch candidates one by one to the RLUQueue if it has a free entry
+		for (uint32_t j = 0; j < predictions.size(); j++) {
+			uint64_t prediction = predictions[j];
+			if (prediction != 0 && prediction != trigBlock) {
+				if (RLU_queue.size() < queueSize) {
+					RLU_queue.push_back(make_pair(prediction, make_pair(DisQueue[0].second.first, DisQueue[0].second.second)));
+				}
+			}
+    }
+
+    // remove the trigger block from DisQueue
+		DisQueue.erase(DisQueue.begin());
+	}
+}
+
+
+// This function performs RLU lookup
+// It looks up the RLU to eliminate issuing prefetches for those blocks that are recently prefetched
+// Moreover, it triggers SeqOnDis, DisOnSeq, and DisOnDis prefetches as well
+void do_RLU_lookup(O3_CPU *core) {
+	if (RLU_queue.empty()) {
+		return;
+	}
+
+  // set the number of lookups in this cycle
+	uint32_t thisCycleRLU_lookups = MaxRLU_lookups;
+	if (RLU_queue.size() < thisCycleRLU_lookups) {
+		thisCycleRLU_lookups = RLU_queue.size();
+	}
+
+  // perform lookups
+	for (uint32_t i = 0; i < thisCycleRLU_lookups; i++) {
+		// issue prefetch if RLU is disabled, or the prefetch candidate is missed in the RLU
+		if (!RLU_enabled || !RLU.find(RLU_queue[0].first)) {
+			// This line triggers the prefetch
+      if(!core->prefetch_code_line(RLU_queue[0].first << LOG2_BLOCK_SIZE)){
+        return;
+      }
+
+
+			// add the new prefech candidate into the RLU
+			RLU.insert(make_pair((RLU_queue[0].first), (RLU_queue[0].second.second == WRONG_SNL_P) ? false : true));
+
+			// if the prefetch is sequential, trigger DisOnSeq prefetching by inserting the current prefetch candidate into the DisQueue
+			if (RLU_queue[0].second.second == SEQ_P || RLU_queue[0].second.second == SEQ_ON_DIS_P || RLU_queue[0].second.second == WRONG_SNL_P) {
+				if (DisEnabled && (DisQueue.size() < queueSize) && (RLU_queue[0].second.first < proactive_lookahead)) {
+					DisQueue.push_back(make_pair(RLU_queue[0].first, make_pair(RLU_queue[0].second.first + 1, DIS_ON_SEQ_P)));
+				}
+        
+        if(SeqTableResetPolicy == 0){
+          // update the SNL status bit, the block is 'PREFETCHED'
+				  SeqTable.set_state(RLU_queue[0].first, 0);
+        }
+			}
+
+			// if the prefetch is discontinuity, trigger SeqOnDis and DisOnDis prefetching by inserting the current prefetch candidate into the SeqQueue and DisQueue
+			if (RLU_queue[0].second.second == DIS_P || RLU_queue[0].second.second == DIS_ON_SEQ_P || RLU_queue[0].second.second == DIS_ON_DIS_P) {
+				if (SeqQueue.size() < queueSize && RLU_queue[0].second.first < proactive_lookahead) {
+					SeqQueue.push_back(make_pair(RLU_queue[0].first, make_pair(RLU_queue[0].second.first + 1, SEQ_ON_DIS_P)));
+				}
+				if (DisEnabled && (DisQueue.size() < queueSize) && (RLU_queue[0].second.first < proactive_lookahead)) {
+					DisQueue.push_back(make_pair(RLU_queue[0].first, make_pair(RLU_queue[0].second.first + 1, DIS_ON_DIS_P)));
+				}
+			}
+
+      // update evaluation counters
+			RLU_permit++;
+		}
+		else {
+			RLU_filter++;
+		}
+
+    // remove the prefetch candidate from RLUQueue
+		RLU_queue.erase(RLU_queue.begin());
+	}
+}
+
+// Our prefetcher does not use this interface
+void O3_CPU::l1i_prefetcher_initialize()
+{
+}
+
+// Our prefetcher does not use this interface
+pair<int, uint64_t> O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uint64_t branch_target, uint8_t pTaken, uint8_t taken)
+{
+  if(!BTB_enabled){
+    if(pTaken != taken){
+      if(taken){
+        return make_pair(4, ip+4);
+      }
+      // TODO: when we don't have BTB, we don't know where should go for the following direction misprediction
+      // It is important for wrong-path address generation, now, we disable wrong-path when BTB is disabled!
+      else{
+        return make_pair(4, ip+4);
+      }
+    }
+    else{
+      return make_pair(0, branch_target);
+    }
+  }
+  else if(branch_type != NOT_BRANCH){ 
+    if(branch_target == 0){
+      branch_target = ip + 4;
+    }
+
+    if(perfect_PC_BTB.find(ip) == perfect_PC_BTB.end() || taken){
+      perfect_PC_BTB[ip] = PC_BTB_ENTRY(ip, branch_target, branch_type);
+    }
+
+    if(taken){
+      perfect_PC_BTB[ip].was_taken = true;
+    }
+ 
+    pair<int, uint64_t> ret_val = make_pair(-1, 0);
+    //cout << "lookup: " << ip << "\tt: " << (int)taken << "\tpt: " << (int)pTaken << "\ttrg: " << branch_target << "\tbt: " << (int)branch_type << "\n";
+    //ret_val = pc_btb_2K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_2K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_4K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_4K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_8K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_8K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);  
+    //ret_val = pc_btb_16K_wo.lookup(ip, 0, taken, pTaken, branch_target, branch_type); 
+    //ret_val = pc_btb_16K_w.lookup (ip, 0, taken, pTaken, branch_target, branch_type); 
+    //ret_val = pc_btb_32K_wo.lookup(ip, 0, taken, pTaken, branch_target, branch_type); 
+    //ret_val = pc_btb_32K_w.lookup (ip, 0, taken, pTaken, branch_target, branch_type); 
+    //ret_val = cnf_btb.lookup(ip, 0, taken, pTaken, branch_target, branch_type);
+    ret_val = sn4l_btb_2K.lookup(ip, 0, taken, pTaken, branch_target, branch_type);
+
+    // The following block can be used when the frontend bottleneck is only branch direction misprediction
+    // but we want also evaluate BTBs
+    /*if(taken != pTaken){
+      return 4;
+    }
+    else{
+      return 0;
+    }*/
+    return ret_val;
+  }
+  else if(branch_type == NOT_BRANCH){
+    pair<int, uint64_t> ret_val = make_pair(0, 0);
+    
+    //pc_btb_2K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_2K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_4K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_4K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_8K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_8K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);  
+    //pc_btb_16K_wo.lookup(ip, 0, taken, pTaken, branch_target, branch_type); 
+    //pc_btb_16K_w.lookup (ip, 0, taken, pTaken, branch_target, branch_type); 
+    //pc_btb_32K_wo.lookup(ip, 0, taken, pTaken, branch_target, branch_type); 
+    //pc_btb_32K_w.lookup (ip, 0, taken, pTaken, branch_target, branch_type); 
+    
+    //cnf_btb.lookup(ip, 0, taken, pTaken, branch_target, branch_type);
+    sn4l_btb_2K.lookup(ip, 0, taken, pTaken, branch_target, branch_type);
+
+    return ret_val;
+  }
+  return make_pair(0, 0);
+}
+
+// Our prefetcher tracks the fetch stream
+void O3_CPU::l1i_prefetcher_cache_operate(uint64_t addr, uint8_t cache_hit, uint8_t prefetch_hit)
+{
+	uint64_t currentBlock = (addr >> LOG2_BLOCK_SIZE);
+
+	// if we touch a block, it means that the block is 'DEMANDED' and SNL status bit should be set, which means that SNL prefetcher should be ready to prefetch it when it is triggered
+	if (SNL_enabled) {
+		SeqTable.set_state(currentBlock, 1);
+	}
+
+  // update some evaluation counters
+	if (!cache_hit && (currentBlock != lastBlock)) {
+		if (!RLU.find(currentBlock)) {
+			if ((currentBlock > lastBlock) && (currentBlock <= (lastBlock + 4))) {
+				non_prefetched_miss_in_seq_region++;
+			}
+			else {
+				non_prefetched_miss_in_Dis_region++;
+			}
+		}
+	}
+
+	// What is a wrong_SNL?
+	// A sequential miss that is not prefetched (determined by RLU miss) OR wrong_SNL has prefetched it (RLU's wrong_SNL_state is true).
+	//
+	// if a sequential miss has occurred
+	if (!cache_hit && currentBlock == (lastBlock + 1)) {
+    // check RLU
+		if (!RLU.find(currentBlock) || RLU.get_state(currentBlock)) {
+      // incerement the wrong_SNL counter
+			wrong_snl_table.increase(currentBlock);
+		}
+	}
+
+	// This is added to make Dis prefetcher more aggressive.
+	// This triggers Dis prefetcher on Access
+	// It is not necessary, however, it may slightly improve the performance
+	if (currentBlock != lastBlock) {
+		// do_Dis_prefetch(this, addr, currentBlock, currentBlock);
+	}
+
+	// Trigger sequential prefetching on miss and on prefech hit
+	//
+	// insert this block to SeqQueue to trigger sequential prefetching
+	if (NL_enabled && (currentBlock != lastBlock) && (!cache_hit || prefetch_hit)) {
+		if (SeqQueue.size() < queueSize) {
+			SeqQueue.push_back(make_pair(currentBlock, make_pair(0, SEQ_P)));
+		}
+	}
+
+	// consider touching a new block
+	// Just for evaluation, we are counting the number of distinct blocks that are touched
+	distinct_blocks.insert(addr >> LOG2_BLOCK_SIZE);
+
+	// update some evaluation counters
+	if (!cache_hit) {
+		if (currentBlock == lastBlock + 1) {
+			sequential_1_misses++;
+		}
+		if ((currentBlock > lastBlock) && (currentBlock <= (lastBlock + 4))) {
+			sequential_4_misses++;
+		}
+		else if (currentBlock != lastBlock) {
+			discontinuity_misses++;
+		}
+	}
+
+	// update some evaluation counters
+	if (prefetch_hit) {
+		if (currentBlock == lastBlock + 1) {
+			sequential_1_prefHits++;
+		}
+		if ((currentBlock > lastBlock) && (currentBlock <= (lastBlock + 4))) {
+			sequential_4_prefHits++;
+		}
+		else if (currentBlock != lastBlock) {
+			discontinuity_prefHits++;
+		}
+	}
+
+	// Update DisTable if a discontinuity has occured
+	if (DisEnabled) {
+    // Trigger Dis prefetching
+    // if this block is missed, its discontinuity is not prefetched as well
+		if (!cache_hit) {
+			do_Dis_prefetch(this, addr, currentBlock, currentBlock);
+		}
+
+    // a discontinuity is recorded if it is missed or prefetch_hit
+		if (!cache_hit || prefetch_hit) {
+			// do_Dis_prefetch(this, addr, currentBlock, currentBlock);
+
+      // Ensure that target is not actually in the sequential domain
+			if (!((currentBlock == (lastBlock)) || (currentBlock == (lastBlock + 1)))) {
+
+				// The following function calls updates some evaluation counters
+				bool b1 = DisTable_singleDest.update_prediction_history(lastBlock, currentBlock, cache_hit, prefetch_hit);
+				bool b2 = false;
+        if(DIS_TABLE_SINGLE_HAS_LEVEL_TWO){
+          DisTable_multipleDests.update_prediction_history(lastBlock, currentBlock, cache_hit, prefetch_hit);
+        }
+				if (!b1 && !b2) {
+					update_history_entry_missed++;
+				}
+
+        // insert the Dis entry into DisTables
+				bool from_DisTable_multipleDests = false;
+        if(true){
+				  if (DIS_TABLE_SINGLE_HAS_LEVEL_TWO && DisTable_multipleDests.lookup(lastBlock, 0, 0, 0, 0)) {
+					  DisTable_multipleDests.lookup(lastBlock, currentBlock, true, true, true);
+					  from_DisTable_multipleDests = true;
+				  }
+				  else {
+					  DisTable_singleDest.lookup(lastBlock, currentBlock, true, true, true);
+				  }
+        }
+
+				// This is an aggressive and a proactive way to issue discontinuity prefetches.
+				// It will be useful when the discontinuity has multiple destinations and the
+				// circular history is repetetive and predictable
+				// consider this discontinuity: [source: A, circular_history: (B, C, D, B), tail: 0]
+				// and suppose that this discontinuity occurs: (A, C). It will update the DisTable to be
+				// [A, (C, C, D, B), 1], based on the predictability of the DisTable's history, we consult
+				// DisTable to give us the discontinuity that is going to happen next, which is D
+				// in this way, Dis prefetcher will give more timely prefetches.
+				if (from_DisTable_multipleDests) {
+					do_Dis_prefetch(this, addr, lastBlock, currentBlock);
+				}
+			}
+		}
+	}
+
+  // update the last accessed block
+	lastBlock = currentBlock;
+}
+
+// The actions that should be done on every cycle.
+void O3_CPU::l1i_prefetcher_cycle_operate()
+{
+  // trigger prefetching on each cycle
+	SeqPrefetching(this);
+	DisPrefetching(this);
+	do_RLU_lookup(this);
+	
+  // decrement the wrong_SNL counters every 'period' cycles
+  if (current_core_cycle[0] % wrong_SNL_decrease_period == 0) {
+		wrong_snl_table.decrease();
+	}
+}
+
+// Our prefetch does not use this interface
+void O3_CPU::l1i_prefetcher_cache_fill(uint64_t v_addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_v_addr, uint8_t evict_used) {
+  if(SeqTableResetPolicy == 1 && !evict_used){
+    // update the SNL status bit, the block is 'PREFETCHED'
+    SeqTable.set_state((evicted_v_addr >> LOG2_BLOCK_SIZE), 0);
+  }
+#ifdef BTB_prefill_on_cache_fill
+  //pc_btb_2K_wo.prefill(v_addr);
+  //pc_btb_2K_w.prefill(v_addr);
+  //pc_btb_4K_wo.prefill(v_addr);
+  //pc_btb_4K_w.prefill(v_addr);
+  //pc_btb_8K_wo.prefill(v_addr);
+  //pc_btb_8K_w.prefill(v_addr);
+  //pc_btb_16K_wo.prefill(v_addr);
+  //pc_btb_16K_w.prefill(v_addr);
+  //pc_btb_32K_wo.prefill(v_addr);
+  //pc_btb_32K_w.prefill(v_addr);
+
+  //cnf_btb.prefill(v_addr, way);
+  sn4l_btb_2K.prefill(v_addr);
+#endif
+
+}
+
+
+void O3_CPU::l1i_prefetcher_prefetch_response(uint64_t v_addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_v_addr) {
+#ifdef BTB_prefill_on_prefetch_hit_and_cache_fill
+  //pc_btb_2K_wo.prefill(v_addr);
+  //pc_btb_2K_w.prefill(v_addr);
+  //pc_btb_4K_wo.prefill(v_addr);
+  //pc_btb_4K_w.prefill(v_addr);
+  //pc_btb_8K_wo.prefill(v_addr);
+  //pc_btb_8K_w.prefill(v_addr);
+  //pc_btb_16K_wo.prefill(v_addr);
+  //pc_btb_16K_w.prefill(v_addr);
+  //pc_btb_32K_wo.prefill(v_addr);
+  //pc_btb_32K_w.prefill(v_addr);
+
+  //cnf_btb.prefill(v_addr, way);
+  sn4l_btb_2K.prefill(v_addr);
+#endif
+}
+
+void O3_CPU::l1i_prefetcher_reset(){
+  pc_btb_2K_wo.reset();
+  pc_btb_2K_w.reset();
+  pc_btb_4K_wo.reset();
+  pc_btb_4K_w.reset();
+  pc_btb_8K_wo.reset();
+  pc_btb_8K_w.reset();
+  pc_btb_16K_wo.reset();
+  pc_btb_16K_w.reset();
+  pc_btb_32K_wo.reset();
+  pc_btb_32K_w.reset();
+
+  cnf_btb.reset();
+  sn4l_btb_2K.reset();
+
+}
+
+// print the state of the prefetcher and some counters
+void O3_CPU::l1i_prefetcher_final_stats()
+{
+	cout << "\n\n\nCPU " << cpu << " #distinct_blocks: " << distinct_blocks.size() << "\n";
+
+	if (DisEnabled) {
+		for (int itr = 0; itr < 2; itr++) {
+			vector<DIS> DisTable_v;
+			if (itr == 0) {
+        cout << "\n\n\nDisTable SINGLE\n";
+				for (uint32_t i = 0; i < DisTable_singleDest.get_num_of_sets(); i++) {
+					for (uint32_t j = 0; j < DisTable_singleDest.get_num_of_ways(); j++) {
+						DisTable_v.push_back(DisTable_singleDest.get_entry(i, j));
+					}
+				}
+			}
+			else if (DIS_TABLE_SINGLE_HAS_LEVEL_TWO && itr == 1) {
+        cout << "\n\n\nDisTable MULTIPLE\n";
+				for (uint32_t i = 0; i < DisTable_multipleDests.get_num_of_sets(); i++) {
+					for (uint32_t j = 0; j < DisTable_multipleDests.get_num_of_ways(); j++) {
+						DisTable_v.push_back(DisTable_multipleDests.get_entry(i, j));
+					}
+				}
+			}
+
+			sort(DisTable_v.begin(), DisTable_v.end(), sort_DIS);
+
+			uint64_t total_freq = 0, total_correct_predictions = 0, total_predictability = 0, total_wrong_predictions = 0, total_timely_predictions = 0, total_untimely_predictions = 0;
+			uint64_t dis_in_seq_region = 0, dis_out_of_sequential_region = 0, total_first_and_second_predictions = 0;
+			uint64_t total_circular_correct_predictions = 0;
+			uint64_t total_circular_wrong_predictions = 0;
+			uint64_t histogram_num_of_dests[10] = {0};
+			uint64_t total_single_destination = 0;
+			uint64_t total_multiple_destination = 0;
+
+
+			for (uint32_t i = 0; i < DisTable_v.size(); i++) {
+				total_freq += DisTable_v[i].total_freq;
+				total_correct_predictions += DisTable_v[i].correct_predictions;
+				total_predictability += DisTable_v[i].total_freq - DisTable_v[i].dest.size();
+				total_wrong_predictions += DisTable_v[i].wrong_predictions;
+				total_timely_predictions += DisTable_v[i].timely_correct_predictions;
+				total_untimely_predictions += DisTable_v[i].untimely_correct_prediction;
+				total_circular_correct_predictions += DisTable_v[i].circular_correct_predictions;
+				total_circular_wrong_predictions += DisTable_v[i].circular_wrong_predictions;
+				if (DisTable_v[i].dest.size() < 9) {
+					histogram_num_of_dests[DisTable_v[i].dest.size()]++;
+				}
+				else {
+					histogram_num_of_dests[9]++;
+				}
+
+				if (DisTable_v[i].dest.size() == 1) {
+					total_single_destination++;
+				}
+				else if (DisTable_v[i].dest.size() != 0) {
+					total_multiple_destination++;
+				}
+
+
+				int first_and_second_freqs = 0;
+				for (uint32_t j = 0; j < DisTable_v[i].dest.size(); j++) {
+					if ((DisTable_v[i].dest[j].first > DisTable_v[i].owner) && (DisTable_v[i].dest[j].first <= (DisTable_v[i].owner + 4))) {
+						dis_in_seq_region++;
+					}
+					else {
+						dis_out_of_sequential_region++;
+					}
+					if (j == 0 || j == 1) {
+						first_and_second_freqs += DisTable_v[i].dest[j].second;
+					}
+				}
+
+				total_first_and_second_predictions += first_and_second_freqs;
+	
+				int dest_change = 0;
+				for (uint32_t j = 1; j < DisTable_v[i].dest_seq.size(); j++) {
+					if (DisTable_v[i].dest_seq[j] != DisTable_v[i].dest_seq[j - 1]) {
+						dest_change++;
+					}
+				}
+			}
+
+			cout << "total_freq: " << total_freq << "\ntotal_correct_predictions: " << total_correct_predictions << "\ntotal_wrong_predictions: " << total_wrong_predictions << "\ntotal_predictability: " << total_predictability << "\ntotal_first_and_second_predictions: " << total_first_and_second_predictions << "\n";
+			cout << "\n\n\ntotal circular correct: " << total_circular_correct_predictions << "\ntotal circular wrong: " << total_circular_wrong_predictions << "\n";
+			cout << "\n\n\ntotal_timely_predictions: " << total_timely_predictions << "\ntotal_untimely_predictions: " << total_untimely_predictions << "\n";
+			cout << "\n\n\ndis_in_seq_region: " << dis_in_seq_region << "\tdis_out_of_sequential_region: " << dis_out_of_sequential_region << "\n";
+      cout << "\n\n\n";
+			for (int i = 0; i < 10; i++) {
+				cout << "histogram_num_of_dests " << i << ": " << histogram_num_of_dests[i] << "\n";
+			}
+			cout << "total_single_destination: " << total_single_destination << "\n";
+			cout << "total_multiple_destination: " << total_multiple_destination << "\n";
+		}
+	}
+	cout << "\n\n\nsequential_1_misses: " << sequential_1_misses << "\nsequential_4_misses: " << sequential_4_misses << "\ndiscontinuity_misses: " << discontinuity_misses << "\n";
+	cout << "sequential_1_prefHits: " << sequential_1_prefHits << "\nsequential_4_prefHits " << sequential_4_prefHits << "\ndiscontinuity_prefHits: " << discontinuity_prefHits << "\n";
+
+	cout << "\n\n\nSeqTable\n";
+	SeqTable.report();
+
+	cout << "\n\n\nwrong_snl_table:\n";
+	wrong_snl_table.report();
+
+	cout << "\n\n\nDisTable1\n";
+	//DisTable_singleDest.print_table(0, true);
+	DisTable_singleDest.report();
+
+  if(DIS_TABLE_SINGLE_HAS_LEVEL_TWO){
+	  cout << "\n\n\nDisTable2\n";
+	  // DisTable_multipleDests.print_table(0, true);
+	  DisTable_multipleDests.report();
+  }
+
+	cout << "\n\n\nRLU_permit: " << RLU_permit << "\nRLU_filter: " << RLU_filter << "\n";
+	cout << "\n\n\nnon_prefetched_miss_in_seq_region: " << non_prefetched_miss_in_seq_region << "\nnon_prefetched_miss_in_Dis_region: " << non_prefetched_miss_in_Dis_region << "\n";
+	cout << "\n\n\nupdate_history_entry_missed: " << update_history_entry_missed << "\n\n\n";
+
+  pc_btb_2K_wo.printStat();
+  pc_btb_2K_w.printStat();
+  pc_btb_4K_wo.printStat();
+  pc_btb_4K_w.printStat();
+  pc_btb_8K_wo.printStat();
+  pc_btb_8K_w.printStat();
+  pc_btb_16K_wo.printStat();
+  pc_btb_16K_w.printStat();
+  pc_btb_32K_wo.printStat();
+  pc_btb_32K_w.printStat();
+  cnf_btb.printStat();
+  sn4l_btb_2K.printStat();
+ 
+  cout << "SHEET\n";
+  cout << "branches: " << perfect_PC_BTB.size() << "\n\n\n";
+
+  cout << "SHEET\n";
+  pc_btb_2K_wo.printStalls(this);
+  pc_btb_2K_w.printStalls(this);
+  pc_btb_4K_wo.printStalls(this);
+  pc_btb_4K_w.printStalls(this);
+  pc_btb_8K_wo.printStalls(this);
+  pc_btb_8K_w.printStalls(this);
+  pc_btb_16K_wo.printStalls(this);
+  pc_btb_16K_w.printStalls(this);
+  pc_btb_32K_wo.printStalls(this);
+  pc_btb_32K_w.printStalls(this);
+  cnf_btb.printStalls(this);
+  sn4l_btb_2K.printStalls(this);
+  cout << "\n\n\n";
+
+}

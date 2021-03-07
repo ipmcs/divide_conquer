@@ -1,0 +1,304 @@
+
+
+
+client_001
+	acc: 97.9037
+	MPKI: 3.63418
+
+
+
+client_002
+	acc: 99.2117
+	MPKI: 1.49752
+
+
+
+client_003
+	acc: 98.6631
+	MPKI: 2.66884
+
+
+
+client_004
+	acc: 94.1242
+	MPKI: 11.6089
+
+
+
+client_005
+	acc: 97.8666
+	MPKI: 3.9013
+
+
+
+client_006
+	acc: 98.1683
+	MPKI: 3.13642
+
+
+
+client_007
+	acc: 98.8607
+	MPKI: 1.8623
+
+
+
+client_008
+	acc: 98.6482
+	MPKI: 3.1551
+
+
+
+server_001
+	acc: 99.5889
+	MPKI: 0.70108
+
+
+
+server_002
+	acc: 99.8789
+	MPKI: 0.20388
+
+
+
+server_003
+	acc: 95.439
+	MPKI: 9.02702
+
+
+
+server_004
+	acc: 98.1603
+	MPKI: 3.89124
+
+
+
+server_009
+	acc: 99.4713
+	MPKI: 1.11484
+
+
+
+server_010
+	acc: 99.5528
+	MPKI: 0.89798
+
+
+
+server_011
+	acc: 97.5565
+	MPKI: 4.59006
+
+
+
+server_012
+	acc: 99.4607
+	MPKI: 1.00288
+
+
+
+server_013
+	acc: 99.4114
+	MPKI: 1.0933
+
+
+
+server_014
+	acc: 99.7719
+	MPKI: 0.38824
+
+
+
+server_015
+	acc: 99.9085
+	MPKI: 0.15428
+
+
+
+server_016
+	acc: 99.7225
+	MPKI: 0.50376
+
+
+
+server_017
+	acc: 99.2833
+	MPKI: 1.20568
+
+
+
+server_018
+	acc: 99.7114
+	MPKI: 0.47678
+
+
+
+server_019
+	acc: 99.2186
+	MPKI: 1.3219
+
+
+
+server_020
+	acc: 99.712
+	MPKI: 0.47638
+
+
+
+server_021
+	acc: 99.8303
+	MPKI: 0.27836
+
+
+
+server_022
+	acc: 99.8317
+	MPKI: 0.27564
+
+
+
+server_023
+	acc: 99.6798
+	MPKI: 0.58608
+
+
+
+server_024
+	acc: 99.7477
+	MPKI: 0.46156
+
+
+
+server_025
+	acc: 99.8142
+	MPKI: 0.34676
+
+
+
+server_026
+	acc: 99.822
+	MPKI: 0.32584
+
+
+
+server_027
+	acc: 99.8082
+	MPKI: 0.35064
+
+
+
+server_028
+	acc: 99.7093
+	MPKI: 0.54708
+
+
+
+server_029
+	acc: 99.7245
+	MPKI: 0.51862
+
+
+
+server_030
+	acc: 99.8445
+	MPKI: 0.29148
+
+
+
+server_031
+	acc: 99.6894
+	MPKI: 0.58048
+
+
+
+server_032
+	acc: 99.8762
+	MPKI: 0.2296
+
+
+
+server_033
+	acc: 99.9029
+	MPKI: 0.19006
+
+
+
+server_034
+	acc: 99.926
+	MPKI: 0.14472
+
+
+
+server_035
+	acc: 99.9115
+	MPKI: 0.17232
+
+
+
+server_036
+	acc: 99.8717
+	MPKI: 0.21174
+
+
+
+server_037
+	acc: 99.913
+	MPKI: 0.15656
+
+
+
+server_038
+	acc: 99.9279
+	MPKI: 0.12968
+
+
+
+server_039
+	acc: 99.9091
+	MPKI: 0.1547
+
+
+
+spec_gcc_001
+	acc: 95.8872
+	MPKI: 9.67286
+
+
+
+spec_gcc_002
+	acc: 99.5987
+	MPKI: 0.82446
+
+
+
+spec_gcc_003
+	acc: 99.665
+	MPKI: 0.78342
+
+
+
+spec_gobmk_001
+	acc: 94.7729
+	MPKI: 9.72684
+
+
+
+spec_gobmk_002
+	acc: 93.9974
+	MPKI: 10.2447
+
+
+
+spec_perlbench_001
+	acc: 98.7418
+	MPKI: 2.47758
+
+
+
+spec_x264_001
+	acc: 97.1633
+	MPKI: 1.73704
+
+
+accuracy v2 = 98.917214
+MPKI: v2 = 1.9986536

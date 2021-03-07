@@ -1,0 +1,506 @@
+
+
+
+client_001
+	load miss: 59768	baseline miss: 268486
+	coverage: 0.77738876515
+	useless: 46965
+	overprediction: 0.174925321991
+	useful: 222274
+	accuracy: 0.825563904189
+
+
+
+client_002
+	load miss: 238451	baseline miss: 466965
+	coverage: 0.489360016275
+	useless: 188441
+	overprediction: 0.403544162839
+	useful: 374469
+	accuracy: 0.665237782239
+
+
+
+client_003
+	load miss: 194964	baseline miss: 406641
+	coverage: 0.520550067504
+	useless: 239595
+	overprediction: 0.589205220329
+	useful: 340498
+	accuracy: 0.586971399414
+
+
+
+client_004
+	load miss: 198915	baseline miss: 499913
+	coverage: 0.602100765533
+	useless: 260421
+	overprediction: 0.52093264228
+	useful: 392460
+	accuracy: 0.601120265408
+
+
+
+client_005
+	load miss: 280401	baseline miss: 595433
+	coverage: 0.529080517875
+	useless: 382851
+	overprediction: 0.642979142909
+	useful: 523880
+	accuracy: 0.577767827503
+
+
+
+client_006
+	load miss: 130144	baseline miss: 686837
+	coverage: 0.810516905758
+	useless: 90806
+	overprediction: 0.132208952051
+	useful: 572783
+	accuracy: 0.863159274792
+
+
+
+client_007
+	load miss: 175237	baseline miss: 803283
+	coverage: 0.781848987219
+	useless: 170408
+	overprediction: 0.212139432803
+	useful: 677433
+	accuracy: 0.79900948409
+
+
+
+client_008
+	load miss: 191242	baseline miss: 672588
+	coverage: 0.715662485801
+	useless: 306657
+	overprediction: 0.455935877536
+	useful: 609651
+	accuracy: 0.665334145287
+
+
+
+server_001
+	load miss: 188765	baseline miss: 501911
+	coverage: 0.623907425819
+	useless: 90293
+	overprediction: 0.179898428207
+	useful: 365572
+	accuracy: 0.80193039606
+
+
+
+server_002
+	load miss: 500137	baseline miss: 819601
+	coverage: 0.3897799051
+	useless: 135730
+	overprediction: 0.165604971199
+	useful: 517483
+	accuracy: 0.792211728793
+
+
+
+server_003
+	load miss: 320746	baseline miss: 850928
+	coverage: 0.623063290901
+	useless: 340366
+	overprediction: 0.399993889025
+	useful: 620075
+	accuracy: 0.645614878998
+
+
+
+server_004
+	load miss: 370615	baseline miss: 1023044
+	coverage: 0.637733078929
+	useless: 429885
+	overprediction: 0.42020186815
+	useful: 743500
+	accuracy: 0.633636871104
+
+
+
+server_009
+	load miss: 350185	baseline miss: 1022076
+	coverage: 0.65737870765
+	useless: 369820
+	overprediction: 0.361832192518
+	useful: 750972
+	accuracy: 0.670036902476
+
+
+
+server_010
+	load miss: 386442	baseline miss: 1135905
+	coverage: 0.659793732751
+	useless: 392863
+	overprediction: 0.345859028704
+	useful: 836327
+	accuracy: 0.680388711265
+
+
+
+server_011
+	load miss: 411105	baseline miss: 1178749
+	coverage: 0.651236183445
+	useless: 445440
+	overprediction: 0.377892155158
+	useful: 870567
+	accuracy: 0.661521557256
+
+
+
+server_012
+	load miss: 445849	baseline miss: 1298544
+	coverage: 0.656654684015
+	useless: 451296
+	overprediction: 0.347540014047
+	useful: 959678
+	accuracy: 0.680152858947
+
+
+
+server_013
+	load miss: 464911	baseline miss: 1355380
+	coverage: 0.656988446045
+	useless: 505668
+	overprediction: 0.37308208768
+	useful: 992808
+	accuracy: 0.662545145868
+
+
+
+server_014
+	load miss: 583737	baseline miss: 1510549
+	coverage: 0.613559705776
+	useless: 219846
+	overprediction: 0.145540462441
+	useful: 1059617
+	accuracy: 0.828173225799
+
+
+
+server_015
+	load miss: 652779	baseline miss: 1620271
+	coverage: 0.597117395794
+	useless: 167246
+	overprediction: 0.103221004388
+	useful: 1037457
+	accuracy: 0.86117242175
+
+
+
+server_016
+	load miss: 556906	baseline miss: 2075882
+	coverage: 0.731725599047
+	useless: 929725
+	overprediction: 0.447869869289
+	useful: 1623324
+	accuracy: 0.635837385025
+
+
+
+server_017
+	load miss: 547228	baseline miss: 2165536
+	coverage: 0.747301360956
+	useless: 144425
+	overprediction: 0.06669249553
+	useful: 1533685
+	accuracy: 0.913935916001
+
+
+
+server_018
+	load miss: 592089	baseline miss: 2397154
+	coverage: 0.753003353143
+	useless: 200896
+	overprediction: 0.0838060466703
+	useful: 1724405
+	accuracy: 0.89565475736
+
+
+
+server_019
+	load miss: 537670	baseline miss: 2147840
+	coverage: 0.74966943534
+	useless: 212310
+	overprediction: 0.0988481451132
+	useful: 1557818
+	accuracy: 0.880059521119
+
+
+
+server_020
+	load miss: 592323	baseline miss: 2400942
+	coverage: 0.753295581484
+	useless: 184256
+	overprediction: 0.0767432116228
+	useful: 1708655
+	accuracy: 0.902659977146
+
+
+
+server_021
+	load miss: 623800	baseline miss: 2441052
+	coverage: 0.744454440135
+	useless: 188680
+	overprediction: 0.0772945435001
+	useful: 1713261
+	accuracy: 0.900796081477
+
+
+
+server_022
+	load miss: 615534	baseline miss: 2448682
+	coverage: 0.748626403919
+	useless: 223513
+	overprediction: 0.091278900241
+	useful: 1765523
+	accuracy: 0.887627473811
+
+
+
+server_023
+	load miss: 644901	baseline miss: 2397938
+	coverage: 0.731060185876
+	useless: 1111337
+	overprediction: 0.463455268652
+	useful: 1876620
+	accuracy: 0.6280612472
+
+
+
+server_024
+	load miss: 668840	baseline miss: 2494805
+	coverage: 0.731906902543
+	useless: 1091858
+	overprediction: 0.43765264219
+	useful: 1949872
+	accuracy: 0.641040460527
+
+
+
+server_025
+	load miss: 650032	baseline miss: 2427617
+	coverage: 0.732234532877
+	useless: 1087388
+	overprediction: 0.447924034145
+	useful: 1887146
+	accuracy: 0.634434166831
+
+
+
+server_026
+	load miss: 739834	baseline miss: 2740097
+	coverage: 0.729997149736
+	useless: 1239164
+	overprediction: 0.452233625306
+	useful: 2128308
+	accuracy: 0.632019508997
+
+
+
+server_027
+	load miss: 726018	baseline miss: 2754393
+	coverage: 0.736414520368
+	useless: 1284425
+	overprediction: 0.466318713415
+	useful: 2159575
+	accuracy: 0.627054297329
+
+
+
+server_028
+	load miss: 744288	baseline miss: 2881688
+	coverage: 0.741718048588
+	useless: 984969
+	overprediction: 0.341802790587
+	useful: 2244457
+	accuracy: 0.69500183624
+
+
+
+server_029
+	load miss: 740732	baseline miss: 2908582
+	coverage: 0.745328823461
+	useless: 999501
+	overprediction: 0.343638584025
+	useful: 2267472
+	accuracy: 0.694058995896
+
+
+
+server_030
+	load miss: 765428	baseline miss: 2943541
+	coverage: 0.739963533717
+	useless: 994072
+	overprediction: 0.337712979028
+	useful: 2275822
+	accuracy: 0.695992591809
+
+
+
+server_031
+	load miss: 773376	baseline miss: 2996774
+	coverage: 0.741930489253
+	useless: 1076088
+	overprediction: 0.359082132987
+	useful: 2332721
+	accuracy: 0.684321415486
+
+
+
+server_032
+	load miss: 768212	baseline miss: 3166016
+	coverage: 0.757356880066
+	useless: 1009325
+	overprediction: 0.318799715478
+	useful: 2499802
+	accuracy: 0.712371481568
+
+
+
+server_033
+	load miss: 720811	baseline miss: 3299369
+	coverage: 0.781530650255
+	useless: 837884
+	overprediction: 0.253952801278
+	useful: 2662216
+	accuracy: 0.760611411103
+
+
+
+server_034
+	load miss: 720706	baseline miss: 3296275
+	coverage: 0.781357441354
+	useless: 921085
+	overprediction: 0.279432086219
+	useful: 2666120
+	accuracy: 0.743230453793
+
+
+
+server_035
+	load miss: 731075	baseline miss: 3336080
+	coverage: 0.780858072948
+	useless: 837223
+	overprediction: 0.25096010887
+	useful: 2693247
+	accuracy: 0.762857919767
+
+
+
+server_036
+	load miss: 657538	baseline miss: 3820792
+	coverage: 0.827905313872
+	useless: 256609
+	overprediction: 0.0671612063677
+	useful: 3107295
+	accuracy: 0.923716907498
+
+
+
+server_037
+	load miss: 908511	baseline miss: 4033919
+	coverage: 0.77478204198
+	useless: 656915
+	overprediction: 0.16284784102
+	useful: 3188431
+	accuracy: 0.829166218072
+
+
+
+server_038
+	load miss: 893590	baseline miss: 4040254
+	coverage: 0.778828261788
+	useless: 615789
+	overprediction: 0.152413437373
+	useful: 3190522
+	accuracy: 0.838218947427
+
+
+
+server_039
+	load miss: 718418	baseline miss: 4087300
+	coverage: 0.824231644362
+	useless: 556048
+	overprediction: 0.136042864483
+	useful: 3481726
+	accuracy: 0.862288478751
+
+
+
+spec_gcc_001
+	load miss: 111697	baseline miss: 220057
+	coverage: 0.492417873551
+	useless: 141570
+	overprediction: 0.643333318186
+	useful: 212135
+	accuracy: 0.5997512051
+
+
+
+spec_gcc_002
+	load miss: 234429	baseline miss: 543520
+	coverage: 0.568683765087
+	useless: 219839
+	overprediction: 0.404472696497
+	useful: 403342
+	accuracy: 0.647230900814
+
+
+
+spec_gcc_003
+	load miss: 294099	baseline miss: 677377
+	coverage: 0.565826710975
+	useless: 269599
+	overprediction: 0.398004360939
+	useful: 492476
+	accuracy: 0.646230357904
+
+
+
+spec_gobmk_001
+	load miss: 198314	baseline miss: 324489
+	coverage: 0.388842148732
+	useless: 375529
+	overprediction: 1.15729346758
+	useful: 448647
+	accuracy: 0.54435824387
+
+
+
+spec_gobmk_002
+	load miss: 280715	baseline miss: 423479
+	coverage: 0.337121793525
+	useless: 702759
+	overprediction: 1.65948960869
+	useful: 729382
+	accuracy: 0.509294825021
+
+
+
+spec_perlbench_001
+	load miss: 148597	baseline miss: 307549
+	coverage: 0.516834715769
+	useless: 221154
+	overprediction: 0.719085414032
+	useful: 297084
+	accuracy: 0.573257846781
+
+
+
+spec_x264_001
+	load miss: 43989	baseline miss: 260110
+	coverage: 0.830883087924
+	useless: 31702
+	overprediction: 0.121879204952
+	useful: 232330
+	accuracy: 0.879931220458
+
+
+
+coverage v2 = 0.677196236599
+overprediction v2 = 0.35340117937
+accuracy v2 = 0.725652416628

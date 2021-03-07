@@ -1,0 +1,181 @@
+#include "BTB.h"
+#include "ooo_cpu.h"
+#include <bits/stdc++.h>
+
+void O3_CPU::l1i_prefetcher_initialize() 
+{
+
+}
+
+
+pair<int, uint64_t> O3_CPU::l1i_prefetcher_branch_operate(uint64_t ip, uint8_t branch_type, uint64_t branch_target, uint8_t pTaken, uint8_t taken){
+  if(!BTB_enabled){
+    if(pTaken != taken){
+      if(taken){
+        return make_pair(4, ip+4);
+      }
+      // TODO: when we don't have BTB, we don't know where should go for the following direction misprediction
+      // It is important for wrong-path address generation, now, we disable wrong-path when BTB is disabled!
+      else{
+        return make_pair(4, ip+4);
+      }
+    }
+    else{
+      return make_pair(0, branch_target);
+    }
+  }
+  else if(branch_type != NOT_BRANCH){ 
+    if(branch_target == 0){
+      branch_target = ip + 4;
+    }
+
+    if(perfect_PC_BTB.find(ip) == perfect_PC_BTB.end() || taken){
+      perfect_PC_BTB[ip] = PC_BTB_ENTRY(ip, branch_target, branch_type);
+    }
+
+    if(taken){
+      perfect_PC_BTB[ip].was_taken = true;
+    }
+ 
+    pair<int, uint64_t> ret_val = make_pair(-1, 0);
+    //cout << "lookup: " << ip << "\tt: " << (int)taken << "\tpt: " << (int)pTaken << "\ttrg: " << branch_target << "\tbt: " << (int)branch_type << "\n";
+    ret_val = pc_btb_2K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_2K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_4K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_4K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_8K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //ret_val = pc_btb_8K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);  
+    //ret_val = pc_btb_16K_wo.lookup(ip, 0, taken, pTaken, branch_target, branch_type); 
+    //ret_val = pc_btb_16K_w.lookup (ip, 0, taken, pTaken, branch_target, branch_type); 
+    //ret_val = pc_btb_32K_wo.lookup(ip, 0, taken, pTaken, branch_target, branch_type); 
+    //ret_val = pc_btb_32K_w.lookup (ip, 0, taken, pTaken, branch_target, branch_type); 
+    //ret_val = cnf_btb.lookup(ip, 0, taken, pTaken, branch_target, branch_type);
+    
+    // The following block can be used when the frontend bottleneck is only branch direction misprediction
+    // but we want also evaluate BTBs
+    /*if(taken != pTaken){
+      return 4;
+    }
+    else{
+      return 0;
+    }*/
+
+    return ret_val;
+  }
+  else if(branch_type == NOT_BRANCH){
+    pair<int, uint64_t> ret_val = make_pair(0, 0);
+    
+    pc_btb_2K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_2K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_4K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_4K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_8K_wo.lookup (ip, 0, taken, pTaken, branch_target, branch_type);   
+    //pc_btb_8K_w.lookup  (ip, 0, taken, pTaken, branch_target, branch_type);  
+    //pc_btb_16K_wo.lookup(ip, 0, taken, pTaken, branch_target, branch_type); 
+    //pc_btb_16K_w.lookup (ip, 0, taken, pTaken, branch_target, branch_type); 
+    //pc_btb_32K_wo.lookup(ip, 0, taken, pTaken, branch_target, branch_type); 
+    //pc_btb_32K_w.lookup (ip, 0, taken, pTaken, branch_target, branch_type); 
+    
+    //cnf_btb.lookup(ip, 0, taken, pTaken, branch_target, branch_type);
+    
+    return ret_val;
+  }
+  return make_pair(0, 0);
+}
+
+
+void O3_CPU::l1i_prefetcher_cache_operate(uint64_t addr, uint8_t cache_hit, uint8_t prefetch_hit)
+{
+}
+
+void O3_CPU::l1i_prefetcher_cycle_operate()
+{
+}
+
+void O3_CPU::l1i_prefetcher_cache_fill(uint64_t v_addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_v_addr, uint8_t evict_used)
+{
+#ifdef BTB_prefill_on_cache_fill
+  //pc_btb_2K_wo.prefill(v_addr);
+  //pc_btb_2K_w.prefill(v_addr);
+  //pc_btb_4K_wo.prefill(v_addr);
+  //pc_btb_4K_w.prefill(v_addr);
+  //pc_btb_8K_wo.prefill(v_addr);
+  //pc_btb_8K_w.prefill(v_addr);
+  //pc_btb_16K_wo.prefill(v_addr);
+  //pc_btb_16K_w.prefill(v_addr);
+  //pc_btb_32K_wo.prefill(v_addr);
+  //pc_btb_32K_w.prefill(v_addr);
+
+  //cnf_btb.prefill(v_addr, way);
+#endif
+}
+
+
+void O3_CPU::l1i_prefetcher_prefetch_response(uint64_t v_addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_v_addr) {
+#ifdef BTB_prefill_on_prefetch_hit_and_cache_fill
+  //pc_btb_2K_wo.prefill(v_addr);
+  //pc_btb_2K_w.prefill(v_addr);
+  //pc_btb_4K_wo.prefill(v_addr);
+  //pc_btb_4K_w.prefill(v_addr);
+  //pc_btb_8K_wo.prefill(v_addr);
+  //pc_btb_8K_w.prefill(v_addr);
+  //pc_btb_16K_wo.prefill(v_addr);
+  //pc_btb_16K_w.prefill(v_addr);
+  //pc_btb_32K_wo.prefill(v_addr);
+  //pc_btb_32K_w.prefill(v_addr);
+
+  //cnf_btb.prefill(v_addr, way);
+#endif
+}
+
+void O3_CPU::l1i_prefetcher_reset(){
+  pc_btb_2K_wo.reset();
+  pc_btb_2K_w.reset();
+  pc_btb_4K_wo.reset();
+  pc_btb_4K_w.reset();
+  pc_btb_8K_wo.reset();
+  pc_btb_8K_w.reset();
+  pc_btb_16K_wo.reset();
+  pc_btb_16K_w.reset();
+  pc_btb_32K_wo.reset();
+  pc_btb_32K_w.reset();
+
+  cnf_btb.reset();
+
+}
+
+
+void O3_CPU::l1i_prefetcher_final_stats()
+{
+  cout << "SHEET\n";
+  cout << "patterns: 0\n\n\n";
+
+  pc_btb_2K_wo.printStat();
+  pc_btb_2K_w.printStat();
+  pc_btb_4K_wo.printStat();
+  pc_btb_4K_w.printStat();
+  pc_btb_8K_wo.printStat();
+  pc_btb_8K_w.printStat();
+  pc_btb_16K_wo.printStat();
+  pc_btb_16K_w.printStat();
+  pc_btb_32K_wo.printStat();
+  pc_btb_32K_w.printStat();
+  cnf_btb.printStat();
+  
+  cout << "SHEET\n";
+  cout << "branches: " << perfect_PC_BTB.size() << "\n\n\n";
+
+  cout << "SHEET\n";
+  pc_btb_2K_wo.printStalls(this);
+  pc_btb_2K_w.printStalls(this);
+  pc_btb_4K_wo.printStalls(this);
+  pc_btb_4K_w.printStalls(this);
+  pc_btb_8K_wo.printStalls(this);
+  pc_btb_8K_w.printStalls(this);
+  pc_btb_16K_wo.printStalls(this);
+  pc_btb_16K_w.printStalls(this);
+  pc_btb_32K_wo.printStalls(this);
+  pc_btb_32K_w.printStalls(this);
+  cnf_btb.printStalls(this);
+  cout << "\n\n\n";
+}
