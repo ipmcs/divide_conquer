@@ -2,7 +2,9 @@
 
 L1i_module="SN4L"
 simulation_name="SN4L_ISCA2020"
-idx=v4
+idx=v5
+cores=48
+traces=~/ipc1_public/*.xz
 
 #CHECK simulator
 BINARY_NAME=hashed_perceptron-$L1i_module-next_line-spp_dev-no-lru-1core-remote
@@ -30,13 +32,13 @@ cp prefetcher/BTB.h results_50M/$idx/.
 kill -9 `pidof $BINARY_NAME`
 
 #ls -q ./ipc1_public/*.xz | while read trace
-for trace in ~/ipc1_public/*.xz
+for trace in $traces
 do
 
     sleep 2
     array=($(pidof $BINARY_NAME))
     echo "${#array[@]}"
-    while [ ${#array[@]} -ge 48 ]
+    while [ ${#array[@]} -ge $cores ]
     do
         sleep 5
         #echo "waiting"
