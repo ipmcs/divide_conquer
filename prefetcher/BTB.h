@@ -177,9 +177,6 @@ class PC_BTB{
         return ret_val;
       } 
 
-      // for branches, we will also lookup the BTB to update it based on the feedback
-      //num_of_updates++;
-
       uint64_t pTarget = addr + 4;
 
       if(!prefill_lookup){
@@ -224,7 +221,6 @@ class PC_BTB{
             }
             else{
               if(!direction && pDirection && table[s][i].target == (addr + 4)){
-                //cout << name << " tag: " << table[s][i].tag << " " << table[s][i].target << "\n";
                 direction_mispredictions_do_not_stall++;
                 ret_val = make_pair(0, pTarget);
               }
@@ -267,11 +263,6 @@ class PC_BTB{
             }
           }
 
-
-          /*if(direction && pTarget != target){
-            num_of_updates++;
-            }*/
-
           PC_BTB_ENTRY tmp = table[s][i];
           if(direction){
             tmp.target = target;
@@ -310,6 +301,8 @@ class PC_BTB{
         else{
           btb_miss_not_stalls++;
 
+          // Our BTB inserts an entry if it finds the missing branch is taken. 
+          // If you want to insert also not taken branches, uncomment the following lines
           //num_of_updates++;
           //table[s].erase(table[s].begin());
           //table[s].push_back(PC_BTB_ENTRY(t, target, branch_type));
@@ -482,8 +475,6 @@ class Confluence_BTB{
     }
 
     uint64_t flookup(uint64_t addr){
-      //num_of_lookups++;
-
       if((addr >> LOG2_BLOCK_SIZE) != last_lookup_block){
         num_of_lookups++;
         last_lookup_block = (addr >> LOG2_BLOCK_SIZE);
@@ -562,9 +553,6 @@ class Confluence_BTB{
         return ret_val;
       } 
 
-      // for branches, we will also lookup the BTB to update it based on the feedback
-      //num_of_updates++;
-
       uint64_t pTarget = addr + 4;
 
       if(!prefill_lookup){
@@ -617,7 +605,6 @@ class Confluence_BTB{
                 }
                 else{
                   if(!direction && pDirection && table[s][i].branches[j].target == (addr + 4)){
-                    //cout << name << " tag: " << table[s][i].tag << " " << table[s][i].target << "\n";
                     direction_mispredictions_do_not_stall++;
                     ret_val = make_pair(0, pTarget);
                   }
@@ -639,12 +626,10 @@ class Confluence_BTB{
                   else{
                     if(pTarget != target){
                       if(branch_type != BRANCH_RETURN){
-                        //cout << "A\n";
                         num_of_updates++;
                       }
                       else{
                         if(pTarget == (addr + 4)){
-                          //cout << "B\n";
                           num_of_updates++;
                         }
                         else{
@@ -661,10 +646,6 @@ class Confluence_BTB{
                   return ret_val;
                 }
               }
-
-              //if(direction && target != pTarget){
-              //  num_of_updates++;
-              //}
 
               if(direction){
                 table[s][i].branches[j].target = target;
@@ -710,7 +691,6 @@ class Confluence_BTB{
                   }
                   else{
                     if(!direction && pDirection && overflow_buffer[idx].target == (addr + 4)){
-                      //cout << name << " tag: " << table[s][i].tag << " " << table[s][i].target << "\n";
                       direction_mispredictions_do_not_stall++;
                       ret_val = make_pair(0, pTarget);
                     }
@@ -732,12 +712,10 @@ class Confluence_BTB{
                     else{
                       if(pTarget != target){
                         if(branch_type != BRANCH_RETURN){
-                          //cout << "C\n";
                           num_of_updates++;
                         }
                         else{
                           if(pTarget == (addr + 4)){
-                            //cout << "D\n";
                             num_of_updates++;
                           }
                           else{
@@ -754,10 +732,6 @@ class Confluence_BTB{
                     return ret_val;
                   }
                 }
-
-                //if(direction && target != pTarget){
-                //  num_of_updates++;
-                //}
 
                 if(direction){
                   overflow_buffer[idx].target = target;
@@ -787,7 +761,6 @@ class Confluence_BTB{
                   btb_miss_stalls++;
 
                   num_of_updates++;
-                  //cout << "E\n";
                   if(table[s][i].branches.size() < bundle_size){
                     table[s][i].branches.push_back(PC_BTB_ENTRY(addr, target, branch_type));
                   }
@@ -1069,7 +1042,6 @@ class SN4L_BTB{
         }
       }
 
-      //cout << "miss lookup\n";
       return PC_BTB_ENTRY();
     }
 
@@ -1110,9 +1082,6 @@ class SN4L_BTB{
       if(branch_type == NOT_BRANCH){
         return ret_val;
       } 
-
-      // for branches, we will also lookup the BTB to update it based on the feedback
-      //num_of_updates++;
 
       uint64_t pTarget = addr + 4;
 
@@ -1162,7 +1131,6 @@ class SN4L_BTB{
             }
             else{
               if(!direction && pDirection && table[s][i].target == (addr + 4)){
-                //cout << name << " tag: " << table[s][i].tag << " " << table[s][i].target << "\n";
                 direction_mispredictions_do_not_stall++;
                 ret_val = make_pair(0, pTarget);
               }
@@ -1205,10 +1173,6 @@ class SN4L_BTB{
             }
           }
 
-
-          /*if(direction && pTarget != target){
-            num_of_updates++;
-            }*/
 
           PC_BTB_ENTRY tmp = table[s][i];
           if(direction){
@@ -1257,7 +1221,6 @@ class SN4L_BTB{
           }
           else{
             if(!direction && pDirection && pb.target == (addr + 4)){
-              //cout << name << " tag: " << table[s][i].tag << " " << table[s][i].target << "\n";
               direction_mispredictions_do_not_stall++;
               ret_val = make_pair(0, pTarget);
             }
@@ -1325,6 +1288,8 @@ class SN4L_BTB{
         else{
           btb_miss_not_stalls++;
 
+          // Our BTB inserts an entry if it finds the missing branch is taken. 
+          // If you want to insert also not taken branches, uncomment the following lines
           //num_of_updates++;
           //table[s].erase(table[s].begin());
           //table[s].push_back(PC_BTB_ENTRY(t, target, branch_type));
