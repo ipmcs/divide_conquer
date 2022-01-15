@@ -85,7 +85,7 @@ traces=~/ipc1_public/*.xz: the location where the traces will be found
 ```
 
 # Extracting Results
-Execute `parse_results.py` giving the name of folder in the "results_${N_SIM}M", for example, `v4`, and it will create an excel file with the same name, `v4.xlsx` in the `excels` folder.
+Execute `excel.sh` giving the name of folder in the "results_${N_SIM}M", for example, `v4`, and it will create an excel file with the same name, `v4.xlsx` in the `excels` folder.
 Note that this script looks for special patterns marked with `SHEET` in the simulation output files. 
 
 # Add your own branch predictor, data prefetchers, and replacement policy
